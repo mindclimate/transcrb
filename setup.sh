@@ -26,6 +26,17 @@ else
 fi
 uv pip install --python .venv -e ".[dev]"
 
+# Reuse the token from config.toml for model downloads (higher rate limits,
+# faster transfers). Downloads still work without it — the models are public.
+if [ -z "${HF_TOKEN:-}" ] && [ -f "config.toml" ]; then
+  HF_TOKEN=$(.venv/bin/python -c "
+import tomllib
+with open('config.toml','rb') as f:
+    print(tomllib.load(f).get('hf_token',''))
+" 2>/dev/null || true)
+  [ -n "$HF_TOKEN" ] && export HF_TOKEN && echo "Using the HF token from config.toml for downloads."
+fi
+
 # 3. Fetch the ivrit.ai Hebrew model, already in CTranslate2 format.
 #    ivrit.ai publishes pre-converted CT2 weights, so no local conversion is needed.
 #    Alternatives: ivrit-ai/whisper-large-v3-turbo-ct2 (faster, slightly less accurate).
