@@ -16,5 +16,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 
+# Both top-level packages are ours; name them so setuptools does not have to
+# guess (flat-layout auto-discovery refuses when it finds more than one).
+[tool.setuptools]
+packages = ["engine", "web"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
