@@ -26,3 +26,23 @@ def test_no_token_returns_empty():
 def test_factory_error_degrades_to_empty():
     def boom(hf_token): raise RuntimeError("model download failed")
     assert diarize_wav(Path("x.wav"), "tok", pipeline_factory=boom) == []
+
+class FakeDiarizeOutput:
+    """pyannote 4.x shape: serialize() instead of itertracks()."""
+    def serialize(self):
+        return {"diarization": [
+            {"start": 2.3, "end": 4.0, "speaker": "SPEAKER_01"},
+            {"start": 0.0, "end": 2.2, "speaker": "SPEAKER_00"},
+        ]}
+
+def test_reads_pyannote_4x_serialize_output():
+    def factory(hf_token):
+        return lambda wav: FakeDiarizeOutput()
+    turns = diarize_wav(Path("x.wav"), "tok", pipeline_factory=factory)
+    assert [t.speaker for t in turns] == ["SPEAKER_00", "SPEAKER_01"]
+    assert turns[0].start == 0.0 and turns[1].end == 4.0
+
+def test_unknown_result_type_degrades_to_empty():
+    def factory(hf_token):
+        return lambda wav: object()   # neither API generation
+    assert diarize_wav(Path("x.wav"), "tok", pipeline_factory=factory) == []
