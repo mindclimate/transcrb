@@ -19,18 +19,26 @@ if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
   export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 fi
-uv venv --python 3.11 .venv
+if [ -d ".venv" ]; then
+  echo "Reusing the existing .venv (delete it if you want a clean rebuild)."
+else
+  uv venv --python 3.11 .venv
+fi
 uv pip install --python .venv -e ".[dev]"
 
-# 3. Convert the ivrit.ai Hebrew model to CTranslate2 (int8)
-#    NOTE: confirm the current best model id at https://huggingface.co/ivrit-ai
+# 3. Fetch the ivrit.ai Hebrew model, already in CTranslate2 format.
+#    ivrit.ai publishes pre-converted CT2 weights, so no local conversion is needed.
+#    Alternatives: ivrit-ai/whisper-large-v3-turbo-ct2 (faster, slightly less accurate).
 if [ ! -d "models/ivrit-whisper-ct2" ]; then
-  echo "Converting the Hebrew model (this downloads a few GB)..."
-  .venv/bin/ct2-transformers-converter \
-    --model ivrit-ai/whisper-large-v3 \
-    --output_dir models/ivrit-whisper-ct2 \
-    --quantization int8 \
-    --copy_files tokenizer.json preprocessor_config.json
+  echo "Downloading the Hebrew model (a few GB, one time)..."
+  .venv/bin/python - <<'PY'
+from huggingface_hub import snapshot_download
+snapshot_download(
+    repo_id="ivrit-ai/whisper-large-v3-ct2",
+    local_dir="models/ivrit-whisper-ct2",
+)
+print("Hebrew model ready.")
+PY
 fi
 
 # 4. Warm the English model cache (faster-whisper auto-downloads large-v3)
