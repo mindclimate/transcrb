@@ -1,0 +1,20 @@
+[project]
+name = "transcrb"
+version = "0.1.0"
+description = "Local private EN/HE meeting transcription"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "faster-whisper>=1.0.3",
+    "pyannote.audio>=3.1",
+    "torch>=2.2",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "soundfile>=0.12",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
