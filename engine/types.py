@@ -25,3 +25,6 @@ class TranscriptResult:
     model: str
     duration: float
     segments: list = field(default_factory=list)
+    # Raw word timings are kept so a transcript can be re-segmented later
+    # without paying for another transcription pass.
+    words: list = field(default_factory=list)

@@ -27,9 +27,21 @@ roughly **30–60 minutes for a 42-minute meeting** with speaker labels on. Pick
 language explicitly instead of Auto-detect skips a detection pass and one model load —
 noticeably faster, and it guarantees Hebrew uses the ivrit.ai model.
 
+## Recording
+The Record panel lists your input devices; pick one and hit Record. The clip is
+saved under `out/recordings/` and transcribed automatically when you stop.
+
+**Grant microphone access first.** macOS asks the app that launched the server —
+Terminal — for permission the first time. If recordings come out near-silent or
+much shorter than expected, enable it under
+System Settings → Privacy & Security → Microphone, then restart Transcrb.
+Allow a second or two of lead-in: ffmpeg takes a moment to open the device.
+
 ## System audio (both sides of a call)
-After BlackHole is installed, create a Multi-Output Device (Audio MIDI Setup) that
-includes BlackHole, route your call audio to it, and pick "system audio" in the Record panel.
+BlackHole appears as an input device **after a reboot** (its installer says so). To
+capture a call, open Audio MIDI Setup, create a Multi-Output Device that includes
+both BlackHole and your speakers, send the call's audio to it, then pick
+"BlackHole 2ch" in the Record panel.
 
 ## Windows (NOT yet tested)
 Run **First-time setup.bat**, install ffmpeg (`winget install Gyan.FFmpeg`), then

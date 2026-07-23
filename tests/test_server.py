@@ -3,7 +3,9 @@ from fastapi.testclient import TestClient
 from engine.types import TranscriptResult, Segment
 from web.server import create_app
 
-def _runner(src, cfg, lang, diarize, num_speakers=None):
+def _runner(src, cfg, lang, diarize, progress=None, num_speakers=None):
+    if progress:
+        progress('transcribing')
     return TranscriptResult(language="en", model="large-v3", duration=1.0,
                             segments=[Segment(0.0, 1.0, "SPEAKER_00", "hi")])
 
@@ -49,3 +51,43 @@ def test_transcribe_sanitizes_path_traversal_filename(tmp_path):
     assert expected_md.exists()
     # ensure nothing was written outside the configured output_dir
     assert (tmp_path / "out").resolve() in expected_md.resolve().parents
+
+def test_favicon_returns_no_content(tmp_path):
+    assert _client(tmp_path).get("/favicon.ico").status_code == 204
+
+def test_progress_reports_stage_after_transcribe(tmp_path):
+    client = _client(tmp_path)
+    files = {"file": ("call.wav", b"x", "audio/wav")}
+    client.post("/api/transcribe", files=files, data={"job": "job-1"})
+    assert client.get("/api/progress", params={"job": "job-1"}).json()["stage"] == "done"
+
+def test_progress_unknown_job_is_blank(tmp_path):
+    assert _client(tmp_path).get("/api/progress", params={"job": "nope"}).json()["stage"] == ""
+
+def test_transcribe_error_returns_500_json_not_traceback(tmp_path):
+    from engine.config import Config
+    from web.server import create_app
+    from fastapi.testclient import TestClient
+    def boom(*a, **k): raise RuntimeError("model exploded")
+    cfg = Config(output_dir=tmp_path / "out", inbox=None, hf_token=None,
+                 compute_type="int8", fallback_language="en")
+    c = TestClient(create_app(cfg=cfg, runner=boom), raise_server_exceptions=False)
+    r = c.post("/api/transcribe", files={"file": ("a.wav", b"x", "audio/wav")})
+    assert r.status_code == 500
+    assert "model exploded" in r.json()["error"]
+
+def test_transcribe_without_file_returns_400(tmp_path):
+    r = _client(tmp_path).post("/api/transcribe", data={"lang": "en"})
+    assert r.status_code == 400
+
+def test_server_path_outside_output_dir_rejected(tmp_path):
+    r = _client(tmp_path).post("/api/transcribe", data={"server_path": "/etc/passwd"})
+    assert r.status_code == 400
+
+def test_devices_endpoint_returns_list(tmp_path):
+    r = _client(tmp_path).get("/api/devices")
+    assert r.status_code == 200 and isinstance(r.json()["devices"], list)
+
+def test_record_stop_unknown_id_returns_404(tmp_path):
+    r = _client(tmp_path).post("/api/record/stop", data={"rec_id": "nope"})
+    assert r.status_code == 404

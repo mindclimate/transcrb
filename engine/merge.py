@@ -49,6 +49,7 @@ def merge_words_and_turns(words: list[Word], turns: list[SpeakerTurn]) -> list[S
         segments.append(_flush(cur_speaker, cur_words))
     return segments
 
-def _flush(speaker: str, words: list[Word]) -> Segment:
+def _flush(speaker: str | None, words: list[Word]) -> Segment:
     text = " ".join(w.text.strip() for w in words).strip()
-    return Segment(start=words[0].start, end=words[-1].end, speaker=speaker, text=text)
+    return Segment(start=words[0].start, end=words[-1].end,
+                   speaker=speaker or "SPEAKER_00", text=text)

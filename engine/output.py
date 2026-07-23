@@ -39,7 +39,22 @@ def to_srt(result: TranscriptResult) -> str:
     return "\n".join(blocks)
 
 def to_json(result: TranscriptResult) -> str:
-    return json.dumps(asdict(result), ensure_ascii=False, indent=2)
+    """The transcript as segments — the shape downstream ingestion reads.
+
+    Word timings are deliberately excluded; they are bulky and live in
+    words.json for re-segmentation.
+    """
+    data = asdict(result)
+    data.pop("words", None)
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+def to_words_json(result: TranscriptResult) -> str:
+    return json.dumps(
+        {"language": result.language, "model": result.model,
+         "duration": result.duration,
+         "words": [asdict(w) for w in result.words]},
+        ensure_ascii=False,
+    )
 
 def write_outputs(result: TranscriptResult, out_dir: Path, name: str,
                   inbox: Path | None = None) -> dict:
@@ -53,6 +68,9 @@ def write_outputs(result: TranscriptResult, out_dir: Path, name: str,
     paths["md"].write_text(to_markdown(result), encoding="utf-8")
     paths["srt"].write_text(to_srt(result), encoding="utf-8")
     paths["json"].write_text(to_json(result), encoding="utf-8")
+    if result.words:
+        paths["words"] = dest / "words.json"
+        paths["words"].write_text(to_words_json(result), encoding="utf-8")
     if inbox is not None:
         inbox = Path(inbox)
         inbox.mkdir(parents=True, exist_ok=True)

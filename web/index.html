@@ -55,7 +55,16 @@
     </div>
     <div class="panel">
       <h2>Record (mic / system audio)</h2>
-      <div class="row"><button id="rec" disabled>Record — set up in first-time setup</button></div>
+      <div class="row">
+        <label>Input: <select id="device"><option value="">loading…</option></select></label>
+        <button id="recStart">● Record</button>
+        <button id="recStop" disabled>■ Stop</button>
+        <span id="recTimer" style="font-family:var(--mono);font-size:12px"></span>
+      </div>
+      <div id="recNote" style="font-size:12px;color:var(--muted)">
+        Pick “BlackHole 2ch” to capture the other side of a call (needs a reboot after install).
+        Recordings transcribe automatically when you stop.
+      </div>
     </div>
     <div class="panel">
       <h2>Result</h2>
@@ -78,23 +87,100 @@
       e.preventDefault(); drop.classList.remove("hover"); }));
     drop.addEventListener("drop", e => { chosen = e.dataTransfer.files[0]; drop.textContent = chosen.name; });
 
-    $("#go").onclick = async () => {
-      if (!chosen) { $("#status").textContent = "Choose a file first."; return; }
-      const fd = new FormData();
-      fd.append("file", chosen);
+    const STAGE_TEXT = {
+      normalizing: "Converting audio…",
+      "detecting language": "Detecting language…",
+      transcribing: "Transcribing… (the long part)",
+      diarizing: "Identifying speakers…",
+      merging: "Assembling transcript…",
+      writing: "Saving files…",
+    };
+
+    async function runTranscription(fd) {
+      const job = Math.random().toString(36).slice(2);
+      fd.append("job", job);
       fd.append("lang", $("#lang").value);
       fd.append("diarize", $("#diarize").checked ? "true" : "false");
       fd.append("speakers", $("#speakers").value);
-      $("#status").textContent = "Working… (this can take a while for long meetings)";
+
+      const started = Date.now();
+      const tick = setInterval(async () => {
+        try {
+          const p = await (await fetch("/api/progress?job=" + job)).json();
+          const mins = Math.floor((Date.now() - started) / 60000);
+          const secs = Math.floor((Date.now() - started) / 1000) % 60;
+          const elapsed = `${mins}:${String(secs).padStart(2, "0")}`;
+          $("#status").textContent =
+            (STAGE_TEXT[p.stage] || "Working…") + "  " + elapsed;
+        } catch (e) { /* polling is best-effort */ }
+      }, 1000);
+
       try {
         const r = await fetch("/api/transcribe", { method: "POST", body: fd });
-        if (!r.ok) throw new Error(await r.text());
         const j = await r.json();
+        if (!r.ok) throw new Error(j.error || r.statusText);
         const md = await (await fetch("/api/file?path=" + encodeURIComponent(j.md))).text();
         $("#result").textContent = md;
         $("#dl").href = "data:text/markdown;charset=utf-8," + encodeURIComponent(md);
-        $("#status").textContent = "Done → " + j.md;
-      } catch (err) { $("#status").textContent = "Error: " + err.message; }
+        const who = (j.speakers && j.speakers.length)
+          ? ` · ${j.speakers.length} speaker${j.speakers.length > 1 ? "s" : ""}` : "";
+        $("#status").textContent = `Done (${j.language})${who} → ${j.md}`;
+      } catch (err) {
+        $("#status").textContent = "Error: " + err.message;
+      } finally {
+        clearInterval(tick);
+      }
+    }
+
+    $("#go").onclick = () => {
+      if (!chosen) { $("#status").textContent = "Choose a file first."; return; }
+      const fd = new FormData();
+      fd.append("file", chosen);
+      return runTranscription(fd);
+    };
+
+    // ---- recorder ----
+    let recId = null, recTimer = null;
+    (async () => {
+      try {
+        const { devices } = await (await fetch("/api/devices")).json();
+        const sel = $("#device");
+        sel.innerHTML = devices.length
+          ? devices.map(d => `<option value="${d.id}">${d.name}</option>`).join("")
+          : '<option value="">no input devices found</option>';
+        if (!devices.length) $("#recStart").disabled = true;
+      } catch (e) {
+        $("#device").innerHTML = '<option value="">unavailable</option>';
+        $("#recStart").disabled = true;
+      }
+    })();
+
+    $("#recStart").onclick = async () => {
+      const fd = new FormData();
+      fd.append("device", $("#device").value);
+      const r = await fetch("/api/record/start", { method: "POST", body: fd });
+      const j = await r.json();
+      if (!r.ok) { $("#status").textContent = "Error: " + (j.error || "could not start"); return; }
+      recId = j.rec_id;
+      $("#recStart").disabled = true; $("#recStop").disabled = false;
+      const t0 = Date.now();
+      recTimer = setInterval(() => {
+        const s = Math.floor((Date.now() - t0) / 1000);
+        $("#recTimer").textContent =
+          `● recording ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+      }, 500);
+    };
+
+    $("#recStop").onclick = async () => {
+      clearInterval(recTimer); $("#recTimer").textContent = "";
+      $("#recStop").disabled = true; $("#recStart").disabled = false;
+      const fd = new FormData(); fd.append("rec_id", recId);
+      const r = await fetch("/api/record/stop", { method: "POST", body: fd });
+      const j = await r.json();
+      if (!r.ok) { $("#status").textContent = "Error: " + (j.error || "stop failed"); return; }
+      const t = new FormData();
+      t.append("server_path", j.path);
+      await runTranscription(t);
     };
     $("#copy").onclick = () => navigator.clipboard.writeText($("#result").textContent);
   </script>

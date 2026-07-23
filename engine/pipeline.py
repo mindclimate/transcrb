@@ -8,13 +8,17 @@ from engine.merge import merge_words_and_turns
 from engine.types import TranscriptResult
 from engine.config import Config
 
+# Anchor to the project root so the models are found no matter where the
+# process was started from.
+MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+
 def _noop(_stage: str): pass
 
 def transcribe_file(src: Path, config: Config, lang: str | None = None,
                     diarize: bool = True, progress=None,
                     num_speakers: int | None = None) -> TranscriptResult:
     progress = progress or _noop
-    models_dir = Path("models")
+    models_dir = MODELS_DIR
     with tempfile.TemporaryDirectory() as td:
         wav = Path(td) / "audio.wav"
         progress("normalizing")
@@ -48,4 +52,5 @@ def transcribe_file(src: Path, config: Config, lang: str | None = None,
         model=model_ref(lang, models_dir),
         duration=duration,
         segments=segments,
+        words=words,
     )
