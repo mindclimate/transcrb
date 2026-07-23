@@ -17,6 +17,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("path")
     ap.add_argument("--lang", choices=["he", "en"], default=None)
     ap.add_argument("--no-diarize", action="store_true")
+    ap.add_argument("--speakers", type=int, default=None,
+                    help="how many speakers to expect (improves labelling)")
     ap.add_argument("--inbox", default=None)
     ap.add_argument("--out", default=None)
     ap.add_argument("--config", default="config.toml")
@@ -41,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             result = transcribe_file(f, cfg, lang=args.lang,
                                      diarize=not args.no_diarize,
+                                     num_speakers=args.speakers,
                                      progress=lambda s: print(f"  {s}"))
         except Exception as e:  # loud, specific, per spec
             print(f"error transcribing {f.name}: {e}", file=sys.stderr)

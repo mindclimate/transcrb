@@ -46,3 +46,24 @@ def test_unknown_result_type_degrades_to_empty():
     def factory(hf_token):
         return lambda wav: object()   # neither API generation
     assert diarize_wav(Path("x.wav"), "tok", pipeline_factory=factory) == []
+
+def test_num_speakers_is_passed_to_pipeline():
+    seen = {}
+    def factory(hf_token):
+        def pipeline(wav, **kw):
+            seen.update(kw)
+            return FakeDiarizeOutput()
+        return pipeline
+    diarize_wav(Path("x.wav"), "tok", pipeline_factory=factory, num_speakers=2)
+    assert seen == {"num_speakers": 2}
+
+def test_num_speakers_omitted_when_not_given():
+    seen = {"called": False}
+    def factory(hf_token):
+        def pipeline(wav, **kw):
+            seen["called"] = True
+            seen["kw"] = kw
+            return FakeDiarizeOutput()
+        return pipeline
+    diarize_wav(Path("x.wav"), "tok", pipeline_factory=factory)
+    assert seen["called"] and seen["kw"] == {}

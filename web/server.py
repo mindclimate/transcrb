@@ -26,7 +26,8 @@ def create_app(cfg=None, runner=None) -> FastAPI:
     @app.post("/api/transcribe")
     async def transcribe(file: UploadFile = File(...),
                          lang: str = Form(default=""),
-                         diarize: str = Form(default="true")):
+                         diarize: str = Form(default="true"),
+                         speakers: str = Form(default="")):
         if not file.filename:
             return JSONResponse({"error": "no filename"}, status_code=400)
         safe = Path(file.filename).name
@@ -36,8 +37,10 @@ def create_app(cfg=None, runner=None) -> FastAPI:
             with open(src, "wb") as f:
                 shutil.copyfileobj(file.file, f)
             lang_arg = lang or None
+            n_spk = int(speakers) if speakers.strip().isdigit() and int(speakers) > 0 else None
             result = await run_in_threadpool(
-                runner, src, cfg, lang_arg, diarize.lower() != "false"
+                runner, src, cfg, lang_arg, diarize.lower() != "false",
+                num_speakers=n_spk,
             )
         paths = write_outputs(result, cfg.output_dir, name, inbox=cfg.inbox)
         return JSONResponse({"name": name, "md": str(paths["md"]),

@@ -31,14 +31,21 @@ def _to_turns(result) -> list[SpeakerTurn]:
         ]
     raise TypeError(f"unrecognised diarization result type: {type(result).__name__}")
 
-def diarize_wav(wav: Path, hf_token: str | None, pipeline_factory=None) -> list[SpeakerTurn]:
+def diarize_wav(wav: Path, hf_token: str | None, pipeline_factory=None,
+                num_speakers: int | None = None) -> list[SpeakerTurn]:
+    """Speaker turns for `wav`.
+
+    `num_speakers` pins how many people to expect. Left unset, clustering
+    decides — which can over-split when a voice shifts in pitch or tone.
+    """
     if not hf_token:
         log.warning("No HuggingFace token — skipping diarization; transcript will have one speaker.")
         return []
     factory = pipeline_factory or _default_factory
     try:
         pipeline = factory(hf_token)
-        turns = _to_turns(pipeline(str(wav)))
+        kwargs = {"num_speakers": num_speakers} if num_speakers else {}
+        turns = _to_turns(pipeline(str(wav), **kwargs))
         turns.sort(key=lambda t: t.start)
         if not turns:
             log.warning("Diarization produced no speaker turns.")

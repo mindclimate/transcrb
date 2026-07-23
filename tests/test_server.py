@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from engine.types import TranscriptResult, Segment
 from web.server import create_app
 
-def _runner(src, cfg, lang, diarize):
+def _runner(src, cfg, lang, diarize, num_speakers=None):
     return TranscriptResult(language="en", model="large-v3", duration=1.0,
                             segments=[Segment(0.0, 1.0, "SPEAKER_00", "hi")])
 

@@ -47,6 +47,8 @@
           </select>
         </label>
         <label><input id="diarize" type="checkbox" checked> Label speakers</label>
+        <label>Speakers: <input id="speakers" type="number" min="2" max="20"
+          placeholder="auto" style="width:70px" title="How many people are talking. Leave blank to detect automatically."></label>
         <button id="go">Transcribe</button>
       </div>
       <div id="status"></div>
@@ -82,6 +84,7 @@
       fd.append("file", chosen);
       fd.append("lang", $("#lang").value);
       fd.append("diarize", $("#diarize").checked ? "true" : "false");
+      fd.append("speakers", $("#speakers").value);
       $("#status").textContent = "Working… (this can take a while for long meetings)";
       try {
         const r = await fetch("/api/transcribe", { method: "POST", body: fd });
