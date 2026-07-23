@@ -30,3 +30,22 @@ def test_file_endpoint_rejects_outside_output_dir(tmp_path):
     client = _client(tmp_path)
     r = client.get("/api/file", params={"path": "/etc/passwd"})
     assert r.status_code == 403
+
+def test_file_endpoint_404_for_missing(tmp_path):
+    client = _client(tmp_path)
+    missing = tmp_path / "out" / "nope" / "transcript.md"
+    r = client.get("/api/file", params={"path": str(missing)})
+    assert r.status_code == 404
+
+def test_transcribe_sanitizes_path_traversal_filename(tmp_path):
+    client = _client(tmp_path)
+    files = {"file": ("../../evil.wav", b"x", "audio/wav")}
+    r = client.post("/api/transcribe", files=files, data={"lang": "en", "diarize": "false"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["name"] == "evil"
+    expected_md = tmp_path / "out" / "evil" / "transcript.md"
+    assert Path(body["md"]) == expected_md
+    assert expected_md.exists()
+    # ensure nothing was written outside the configured output_dir
+    assert (tmp_path / "out").resolve() in expected_md.resolve().parents

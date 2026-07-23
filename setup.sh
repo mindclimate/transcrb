@@ -17,7 +17,7 @@ fi
 # 2. Python 3.11 venv + deps
 if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
-  export PATH="$HOME/.cargo/bin:$PATH"
+  export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 fi
 uv venv --python 3.11 .venv
 uv pip install --python .venv -e ".[dev]"

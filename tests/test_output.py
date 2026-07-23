@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 from engine.types import Segment, TranscriptResult
-from engine.output import fmt_timestamp, to_markdown, to_srt, to_json, write_outputs
+from engine.output import fmt_timestamp, to_markdown, to_srt, to_json, write_outputs, _srt_time
 
 def _sample():
     return TranscriptResult(
@@ -31,6 +31,16 @@ def test_json_roundtrip():
     data = json.loads(to_json(_sample()))
     assert data["language"] == "he"
     assert data["segments"][0]["text"] == "שלום לכולם"
+
+def test_srt_time_no_ms_overflow():
+    result = TranscriptResult(
+        language="en", model="large-v3", duration=2.0,
+        segments=[Segment(0.0, 1.9999995, "SPEAKER_00", "hi")],
+    )
+    srt = to_srt(result)
+    assert "00:00:02,000" in srt
+    assert ",1000" not in srt
+    assert _srt_time(1.9999995) == "00:00:02,000"
 
 def test_write_outputs_creates_files_and_inbox_copy(tmp_path):
     out = tmp_path / "out"

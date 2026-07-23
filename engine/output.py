@@ -9,8 +9,12 @@ def fmt_timestamp(seconds: float) -> str:
     return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
 
 def _srt_time(seconds: float) -> str:
-    ms = int(round((seconds - int(seconds)) * 1000))
-    return f"{fmt_timestamp(seconds)},{ms:03d}"
+    whole = int(seconds)
+    ms = int(round((seconds - whole) * 1000))
+    if ms == 1000:
+        whole += 1
+        ms = 0
+    return f"{fmt_timestamp(whole)},{ms:03d}"
 
 def to_markdown(result: TranscriptResult) -> str:
     lines = [

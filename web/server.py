@@ -27,9 +27,12 @@ def create_app(cfg=None, runner=None) -> FastAPI:
     async def transcribe(file: UploadFile = File(...),
                          lang: str = Form(default=""),
                          diarize: str = Form(default="true")):
-        name = Path(file.filename).stem
+        if not file.filename:
+            return JSONResponse({"error": "no filename"}, status_code=400)
+        safe = Path(file.filename).name
+        name = Path(safe).stem
         with tempfile.TemporaryDirectory() as td:
-            src = Path(td) / file.filename
+            src = Path(td) / safe
             with open(src, "wb") as f:
                 shutil.copyfileobj(file.file, f)
             lang_arg = lang or None
@@ -46,6 +49,8 @@ def create_app(cfg=None, runner=None) -> FastAPI:
         allowed = cfg.output_dir.resolve()
         if allowed not in p.parents:
             return JSONResponse({"error": "forbidden"}, status_code=403)
+        if not p.is_file():
+            return JSONResponse({"error": "not found"}, status_code=404)
         return FileResponse(p)
 
     # serve static assets (app.css)

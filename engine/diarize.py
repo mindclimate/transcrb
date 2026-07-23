@@ -3,9 +3,10 @@ from engine.types import SpeakerTurn
 
 def _default_factory(hf_token: str):
     from pyannote.audio import Pipeline
-    return Pipeline.from_pretrained(
-        "pyannote/speaker-diarization-3.1", use_auth_token=hf_token
-    )
+    try:
+        return Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=hf_token)
+    except TypeError:
+        return Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=hf_token)
 
 def diarize_wav(wav: Path, hf_token: str | None, pipeline_factory=None) -> list[SpeakerTurn]:
     if not hf_token:
