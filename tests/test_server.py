@@ -25,3 +25,8 @@ def test_transcribe_endpoint(tmp_path):
     body = r.json()
     assert body["name"] == "call"
     assert Path(body["md"]).exists()
+
+def test_file_endpoint_rejects_outside_output_dir(tmp_path):
+    client = _client(tmp_path)
+    r = client.get("/api/file", params={"path": "/etc/passwd"})
+    assert r.status_code == 403

@@ -40,6 +40,14 @@ def create_app(cfg=None, runner=None) -> FastAPI:
         return JSONResponse({"name": name, "md": str(paths["md"]),
                              "json": str(paths["json"])})
 
+    @app.get("/api/file")
+    def get_file(path: str):
+        p = Path(path).resolve()
+        allowed = cfg.output_dir.resolve()
+        if allowed not in p.parents:
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        return FileResponse(p)
+
     # serve static assets (app.css)
     from fastapi.staticfiles import StaticFiles
     (HERE / "static").mkdir(exist_ok=True)
