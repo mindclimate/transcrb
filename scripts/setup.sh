@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."          # this script lives in scripts/; work from the root
 export PATH="/opt/homebrew/bin:$PATH"
 
 echo "== Transcrb first-time setup =="
@@ -26,15 +26,22 @@ else
 fi
 uv pip install --python .venv -e ".[dev]"
 
-# Reuse the token from config.toml for model downloads (higher rate limits,
-# faster transfers). Downloads still work without it — the models are public.
-if [ -z "${HF_TOKEN:-}" ] && [ -f "config.toml" ]; then
+# Give a fresh install a config file of its own to edit.
+if [ ! -f "config/config.toml" ]; then
+  cp config/config.example.toml config/config.toml
+  echo "Created config/config.toml — add your HuggingFace token there for speaker labels."
+fi
+
+# Reuse the token from config/config.toml for model downloads (higher rate
+# limits, faster transfers). Downloads still work without it — models are public.
+if [ -z "${HF_TOKEN:-}" ] && [ -f "config/config.toml" ]; then
   HF_TOKEN=$(.venv/bin/python -c "
 import tomllib
-with open('config.toml','rb') as f:
+with open('config/config.toml','rb') as f:
     print(tomllib.load(f).get('hf_token',''))
 " 2>/dev/null || true)
-  [ -n "$HF_TOKEN" ] && export HF_TOKEN && echo "Using the HF token from config.toml for downloads."
+  [ -n "$HF_TOKEN" ] && export HF_TOKEN && \
+    echo "Using the HF token from config/config.toml for downloads."
 fi
 
 # 3. Fetch the ivrit.ai Hebrew model, already in CTranslate2 format.

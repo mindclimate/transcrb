@@ -6,7 +6,7 @@
    and downloads/converts the models (a few GB, one time).
 2. Speaker labels need a free HuggingFace token:
    - Create one at https://huggingface.co/settings/tokens
-   - Put it in `config.toml` as `hf_token = "hf_..."` (copy from `config.example.toml`),
+   - Put it in `config/config.toml` as `hf_token = "hf_..."` (copy from `config/config.example.toml`),
      or export `HF_TOKEN`.
    - **Accept the conditions on all three gated repos** while logged in. pyannote 4.x
      redirects internally to `community-1`, so accepting only the first two is not
@@ -17,7 +17,7 @@
    - Verify before a long run:
      ```
      .venv/bin/python -c "import tomllib; from engine.diarize import _default_factory; \
-     _default_factory(tomllib.load(open('config.toml','rb'))['hf_token']); print('diarization OK')"
+     _default_factory(tomllib.load(open('config/config.toml','rb'))['hf_token']); print('diarization OK')"
      ```
 3. Double-click **Start Transcrb.command** — your browser opens the UI.
 
@@ -54,12 +54,12 @@ captures what macOS *plays*, not what a particular device receives, so:
 - your system output is never modified, and you hear the call normally.
 
 The tap and its device exist only while recording and are destroyed on stop, so
-they never appear in other apps' device lists. `setup.sh` verifies at install time
+they never appear in other apps' device lists. `scripts/setup.sh` verifies at install time
 that a tap can be created. If that check fails, the usual cause is
 System Settings → Privacy & Security → **Screen & System Audio Recording**.
 
 ### Older macOS (before 14.2): the BlackHole fallback
-Taps do not exist before macOS 14.2, so `setup.sh` creates two CoreAudio devices
+Taps do not exist before macOS 14.2, so `scripts/setup.sh` creates two CoreAudio devices
 instead — the ones you would otherwise build by hand in Audio MIDI Setup:
 
 - **Transcrb Output (hear + capture)** — a Multi-Output Device of your output plus

@@ -1,4 +1,4 @@
-# Copy to config.toml and edit. config.toml is gitignored.
+# Copy to config/config.toml and edit. That file is gitignored — safe for secrets.
 output_dir = "out"
 # inbox = "/Users/aladdin/PROJECTS/WorkBrain/brain/inbox"   # optional: copy transcripts here
 # hf_token = "hf_xxx"        # or set the HF_TOKEN env var (needed for pyannote)

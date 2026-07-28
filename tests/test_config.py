@@ -30,3 +30,15 @@ def test_env_overrides_file_token(tmp_path, monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "env-token")
     cfg = load_config(p)
     assert cfg.hf_token == "env-token"
+
+def test_default_config_path_sits_in_the_config_folder():
+    # Anchored to the project root, not the working directory: the launchers cd
+    # into the folder, but a friend running things by hand may not.
+    from engine.config import DEFAULT_CONFIG_PATH, PROJECT_ROOT
+    assert DEFAULT_CONFIG_PATH == PROJECT_ROOT / "config" / "config.toml"
+    assert (PROJECT_ROOT / "config" / "config.example.toml").is_file()
+
+def test_load_config_uses_the_default_path_when_given_nothing():
+    from engine.config import load_config
+    cfg = load_config()          # must not raise when config.toml is absent
+    assert cfg.compute_type in ("int8", "int8_float16")

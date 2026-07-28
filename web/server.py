@@ -49,7 +49,7 @@ def _expire_progress() -> None:
 def create_app(cfg=None, runner=None, probe=None, capture=None) -> FastAPI:
     """`capture` is the system-audio capture class: None auto-detects, False
     disables it, or pass a class for tests."""
-    cfg = cfg or load_config(Path("config.toml"))
+    cfg = cfg or load_config()
     runner = runner or transcribe_file
     probe = probe or recorder.probe_device_peak
     capture_factory = _default_capture_factory() if capture is None else (capture or None)

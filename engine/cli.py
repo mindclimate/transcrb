@@ -1,7 +1,7 @@
 import argparse
 import sys
 from pathlib import Path
-from engine.config import load_config
+from engine.config import DEFAULT_CONFIG_PATH, load_config
 from engine.pipeline import transcribe_file
 from engine.output import write_outputs
 
@@ -21,7 +21,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="how many speakers to expect (improves labelling)")
     ap.add_argument("--inbox", default=None)
     ap.add_argument("--out", default=None)
-    ap.add_argument("--config", default="config.toml")
+    ap.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
     args = ap.parse_args(argv)
 
     path = Path(args.path)

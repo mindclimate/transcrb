@@ -1,5 +1,5 @@
 from pathlib import Path
-import cli
+from engine import cli
 from engine.types import TranscriptResult, Segment
 
 def test_cli_transcribes_single_file(monkeypatch, tmp_path, capsys):
