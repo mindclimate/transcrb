@@ -53,3 +53,38 @@ def test_write_outputs_creates_files_and_inbox_copy(tmp_path):
     assert (inbox / "meeting-x.md").exists()
     assert (inbox / "meeting-x.json").exists()
     assert written["md"] == out / "meeting-x" / "transcript.md"
+
+
+# ---- mixed-language transcripts ----------------------------------------------
+
+def _mixed_result():
+    return TranscriptResult(
+        language="en+he", model="large-v3+models/ivrit-whisper-ct2", duration=90.0,
+        segments=[Segment(0.0, 30.0, "SPEAKER_00", "hello everyone", lang="en"),
+                  Segment(30.0, 60.0, "SPEAKER_01", "שלום לכולם", lang="he")])
+
+def _single_result():
+    return TranscriptResult(
+        language="en", model="large-v3", duration=10.0,
+        segments=[Segment(0.0, 5.0, "SPEAKER_00", "hello", lang="en")])
+
+def test_markdown_tags_each_line_with_its_language_when_mixed():
+    md = to_markdown(_mixed_result())
+    assert "SPEAKER_00 (en): hello everyone" in md
+    assert "SPEAKER_01 (he): שלום לכולם" in md
+
+def test_markdown_leaves_single_language_transcripts_untagged():
+    # Tagging every line of a normal transcript would be noise.
+    md = to_markdown(_single_result())
+    assert "SPEAKER_00: hello" in md
+    assert "(en)" not in md.split("- Language")[1].split("\n", 1)[1]
+
+def test_json_records_the_language_of_every_segment():
+    import json
+    data = json.loads(to_json(_mixed_result()))
+    assert [s["lang"] for s in data["segments"]] == ["en", "he"]
+
+def test_srt_stays_plain_text_for_players():
+    srt = to_srt(_mixed_result())
+    assert "(en)" not in srt and "(he)" not in srt
+    assert "שלום לכולם" in srt

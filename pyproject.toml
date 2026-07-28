@@ -23,3 +23,7 @@ packages = ["engine", "web"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Integration tests that load the real multi-GB models and take minutes.
+# Excluded by default; run with `-m slow`.
+addopts = "-m 'not slow'"
+markers = ["slow: needs the real models and real audio"]

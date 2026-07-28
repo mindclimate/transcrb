@@ -5,6 +5,9 @@ class Word:
     start: float
     end: float
     text: str
+    # Which language this word was transcribed in. A recording can switch
+    # part-way through, and each span goes to the model that matches it.
+    lang: str = ""
 
 @dataclass
 class SpeakerTurn:
@@ -18,6 +21,7 @@ class Segment:
     end: float
     speaker: str
     text: str
+    lang: str = ""
 
 @dataclass
 class TranscriptResult:

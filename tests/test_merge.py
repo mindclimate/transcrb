@@ -59,3 +59,34 @@ def test_long_monologue_without_sentence_ends_stays_whole():
     words = [Word(float(i), float(i) + 0.9, "word") for i in range(40)]
     segs = merge_words_and_turns(words, [])
     assert len(segs) == 1
+
+
+# ---- mixed-language recordings ----------------------------------------------
+# Words from either side of a language switch must not land in one segment: the
+# line would mix scripts and read as gibberish in both directions.
+
+def test_segments_break_when_the_language_changes():
+    words = [Word(0.0, 1.0, "hello", lang="en"),
+             Word(1.1, 2.0, "everyone", lang="en"),
+             Word(2.1, 3.0, "שלום", lang="he"),
+             Word(3.1, 4.0, "לכולם", lang="he")]
+    segs = merge_words_and_turns(words, [])
+    assert len(segs) == 2                      # not a pause or speaker break
+    assert segs[0].text == "hello everyone"
+    assert segs[1].text == "שלום לכולם"
+
+def test_each_segment_carries_the_language_of_its_words():
+    words = [Word(0.0, 1.0, "hello", lang="en"), Word(2.1, 3.0, "שלום", lang="he")]
+    segs = merge_words_and_turns(words, [])
+    assert [s.lang for s in segs] == ["en", "he"]
+
+def test_switching_back_produces_three_segments():
+    words = [Word(0.0, 1.0, "hi", lang="en"),
+             Word(1.1, 2.0, "שלום", lang="he"),
+             Word(2.1, 3.0, "bye", lang="en")]
+    assert [s.lang for s in merge_words_and_turns(words, [])] == ["en", "he", "en"]
+
+def test_single_language_words_still_merge_into_one_segment():
+    words = [Word(0.0, 1.0, "one", lang="en"), Word(1.1, 2.0, "two", lang="en")]
+    segs = merge_words_and_turns(words, [])
+    assert len(segs) == 1 and segs[0].lang == "en"

@@ -1,0 +1,106 @@
+# Mixed Hebrew/English recordings — design
+
+**Date:** 2026-07-28
+**Status:** implemented
+
+## Problem
+
+A standup recorded with the new automatic capture switched between English and
+Hebrew. Auto-detect labelled the file `en` and the Hebrew never appeared as
+Hebrew.
+
+The failure is worse than "the Hebrew was skipped". Whisper decides one language
+per file from its opening 30 seconds, and given the wrong one it does not fail or
+drop audio — it **translates**. Reproduced on a synthesized EN→HE→EN clip:
+
+```
+[ 7.3-14.1] Good morning. I want to talk about a new project. I finished the recording work...
+```
+
+That span was Hebrew speech. The transcript reads as fluent, complete English
+with nothing marking it as translated, so the corruption is invisible to a reader
+and survives into anything downstream. It is symmetric: a Hebrew-labelled file
+translates the English.
+
+Root cause: `engine/detect.py` called `model.transcribe(language=None)` and took
+one label from the first window, then pinned it for the whole file. The original
+spec called for sampling "~30s from several points"; the implementation only ever
+looked at the opening.
+
+## Rejected: faster-whisper's `multilingual=True`
+
+The obvious fix. Measured: it translated the Hebrew too. Its detection is
+per-30s-window, so a window containing mostly English decodes the Hebrew inside
+it as English. Segments also expose no language field, so it cannot even report
+what it decided. Not viable.
+
+## Two measurements that shaped the design
+
+An earlier version of this design assumed a window straddling a switch would
+betray itself with low confidence, and refined only those windows. That premise
+was **false** and the integration test caught it after the unit tests passed
+against a fake detector encoding the same wrong assumption.
+
+1. **A window's verdict reflects its opening moment, not its majority — at full
+   confidence.** A window 74% Hebrew returned `en (0.96)`; only one ~93% pure
+   returned `he`. There is no cheap signal for "contains a switch", so nothing
+   bounds boundary error except probing often enough.
+2. **A small model is cheaper *and* better here.** `base` scored 19/19 on a clip
+   large-v3 read as pure English, at ~20x less cost per probe. Language ID is an
+   easy task; a large model buys nothing and costs 3s per probe.
+
+## Design
+
+**Scan then route.** `detect_language_spans` probes uniformly: every 2 seconds,
+each probe reading 6 seconds for context but labelling only the 2 seconds at its
+start. Probes use `base`. Contiguous labels coalesce into spans; spans under 5
+seconds are absorbed into the longer neighbour as detector noise; an unsupported
+answer (Whisper says Arabic for Hebrew sometimes) inherits from neighbours; a
+file with nothing confident falls back to `config.fallback_language`.
+
+`hop` is simultaneously the cost and the precision of the whole feature:
+`duration / hop` probes, and boundary error bounded by `hop`.
+
+**Then each span goes to the model that matches it** — Hebrew to ivrit.ai,
+English to large-v3 — via `transcribe_span`, which slices the audio and offsets
+the returned timestamps rather than trusting `clip_timestamps` semantics. Words
+are sorted back into timeline order and tagged with their language.
+
+**One span covering everything short-circuits to the old whole-file path**, so a
+single-language meeting costs exactly what it did before plus the scan.
+
+## Behaviour
+
+- **Auto-detect handles mixed audio.** No mode to pick; nothing to remember. The
+  user chose this over an explicit "Mixed" option because a wrong mode silently
+  reintroduces translation.
+- **Hebrew only / English only** skip the scan entirely as fast paths.
+- `merge.py` breaks segments at language changes, so no line mixes scripts.
+- Markdown tags each line's language only when the transcript is mixed; JSON
+  always carries `lang` per segment; SRT stays plain text.
+- Result reports `he+en` and credits both models.
+
+## Costs and limits
+
+- Scan runs ~0.08x realtime: ~2 minutes for a 24-minute meeting against 30–60
+  minutes of transcription. Models load in ~3.5s each.
+- A Hebrew-only meeting now never loads large-v3 at all.
+- **Mid-sentence switching** can leave 1–2s on the wrong side of a boundary, and
+  that fragment gets translated. Sentence-boundary switches are clean.
+- Accuracy is verified against synthesized speech, which is cleaner than a real
+  meeting. The 19/19 is a sanity floor, not a field measurement.
+
+## Testing
+
+Span logic is unit-tested with the detector injected as
+`detect(start, end) -> (lang, prob)`, the fake modelling the *measured*
+behaviour. Because unit tests against a fake cannot catch a wrong model of
+reality — as happened here — an opt-in integration test runs the real models over
+real bilingual speech and asserts the Hebrew comes back in Hebrew script:
+
+```
+.venv/bin/python -m pytest -m slow tests/test_mixed_language_integration.py
+```
+
+Fixture generated by `tests/fixtures/make_mixed_speech.sh` (macOS `say`, Carmit
+voice). That test is the one that proves the bug is dead.

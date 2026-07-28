@@ -24,8 +24,53 @@
 ## Speed
 Transcription is CPU-only (CTranslate2 has no Metal backend). On an M1 Pro expect
 roughly **30–60 minutes for a 42-minute meeting** with speaker labels on. Picking the
-language explicitly instead of Auto-detect skips a detection pass and one model load —
-noticeably faster, and it guarantees Hebrew uses the ivrit.ai model.
+language explicitly instead of Auto-detect skips the language scan, so it is
+somewhat faster — worth doing when you know the meeting is in one language.
+
+## Languages, including meetings that switch mid-call
+Leave the picker on **Auto-detect** and a recording that moves between Hebrew and
+English is handled correctly: each stretch is transcribed by the model that
+matches it — Hebrew by the ivrit.ai model, English by large-v3 — and the
+transcript reports `he+en` with each line tagged by language.
+
+This matters more than it sounds. Whisper decides one language per file from its
+opening 30 seconds. Given the wrong one it does not fail or skip — it
+**translates**, so a Hebrew answer in an English-labelled call comes back as
+fluent English nobody actually said, with nothing in the output to reveal it.
+Auto-detect therefore scans the recording for language spans before
+transcribing, rather than labelling the whole file from its first half minute.
+
+How it works, and why it looks the way it does. Two measured facts drove it:
+
+1. **A window's reported language reflects its opening, not its majority — at
+   full confidence.** A window that was 74% Hebrew came back `en (0.96)`. So
+   there is no clever signal for "this window contains a switch"; the only thing
+   that bounds the error is probing often enough. The scan therefore probes
+   uniformly every 2 seconds, each probe reading 6 seconds for context but
+   labelling only the 2 seconds at its start.
+2. **A small model is both cheaper and better at this.** `base` scored 19/19 on a
+   clip that large-v3 read as pure English, at ~20x less cost per probe. So
+   language ID uses `base` (downloaded by setup, ~150MB) while transcription
+   still uses large-v3 and the ivrit.ai model. A Hebrew-only meeting now never
+   loads large-v3 at all.
+
+Contiguous probes become spans; anything under 5 seconds is treated as detector
+noise and absorbed into its neighbour, and an unsupported answer (Whisper
+occasionally says Arabic for Hebrew) inherits from its neighbours.
+
+Costs and limits:
+- The scan runs at about 0.08x realtime — roughly 2 minutes for a 24-minute
+  meeting, against 30–60 minutes of transcription. Models load in ~3.5s each.
+- Boundary precision is the 2-second probe hop. Switching language
+  **mid-sentence** can leave a second or two on the wrong side of a boundary,
+  and that fragment gets translated. Switches at sentence boundaries — how
+  people actually speak — are handled cleanly.
+- Accuracy is verified against synthesized bilingual speech
+  (`tests/fixtures/make_mixed_speech.sh`), which is cleaner than a real meeting.
+  Treat the 19/19 as a floor-setting sanity check, not a field measurement.
+- **Hebrew only** / **English only** skip the scan entirely. If you pick one and
+  the meeting turns out to be mixed, you are back to the translation behaviour
+  above, so prefer Auto-detect unless you are certain.
 
 ## Recording
 The Record panel lists your input devices; pick one and hit Record. The clip is

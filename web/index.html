@@ -50,9 +50,9 @@
       <div class="row">
         <label>Language:
           <select id="lang">
-            <option value="">Auto-detect</option>
-            <option value="he">Hebrew</option>
-            <option value="en">English</option>
+            <option value="">Auto-detect (handles mixed)</option>
+            <option value="he">Hebrew only (faster)</option>
+            <option value="en">English only (faster)</option>
           </select>
         </label>
         <label><input id="diarize" type="checkbox" checked> Label speakers</label>
@@ -103,12 +103,25 @@
 
     const STAGE_TEXT = {
       normalizing: "Converting audio…",
-      "detecting language": "Detecting language…",
+      "detecting language": "Finding which languages are spoken…",
       transcribing: "Transcribing… (the long part)",
       diarizing: "Identifying speakers…",
       merging: "Assembling transcript…",
       writing: "Saving files…",
     };
+    const LANGUAGE_NAMES = { he: "Hebrew", en: "English" };
+
+    function stageText(stage) {
+      if (STAGE_TEXT[stage]) return STAGE_TEXT[stage];
+      // A mixed recording reports "transcribing he" / "transcribing en" so a
+      // long run shows which half it is working through.
+      const mixed = /^transcribing (\w+)$/.exec(stage || "");
+      if (mixed) {
+        const name = LANGUAGE_NAMES[mixed[1]] || mixed[1];
+        return `Transcribing the ${name}… (the long part)`;
+      }
+      return "Working…";
+    }
 
     async function runTranscription(fd) {
       const job = Math.random().toString(36).slice(2);
@@ -124,8 +137,7 @@
           const mins = Math.floor((Date.now() - started) / 60000);
           const secs = Math.floor((Date.now() - started) / 1000) % 60;
           const elapsed = `${mins}:${String(secs).padStart(2, "0")}`;
-          $("#status").textContent =
-            (STAGE_TEXT[p.stage] || "Working…") + "  " + elapsed;
+          $("#status").textContent = stageText(p.stage) + "  " + elapsed;
         } catch (e) { /* polling is best-effort */ }
       }, 1000);
 

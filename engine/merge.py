@@ -40,7 +40,11 @@ def merge_words_and_turns(words: list[Word], turns: list[SpeakerTurn]) -> list[S
     cur_words: list[Word] = []
     for w in words:
         speaker = _assign_speaker(w, turns) if turns else "SPEAKER_00"
-        if cur_words and (speaker != cur_speaker or _should_break(cur_words, w)):
+        # A language switch always ends the segment: one line must not mix
+        # scripts, which would read as gibberish in both directions.
+        language_changed = bool(cur_words) and w.lang != cur_words[-1].lang
+        if cur_words and (speaker != cur_speaker or language_changed
+                          or _should_break(cur_words, w)):
             segments.append(_flush(cur_speaker, cur_words))
             cur_words = []
         cur_speaker = speaker
@@ -52,4 +56,5 @@ def merge_words_and_turns(words: list[Word], turns: list[SpeakerTurn]) -> list[S
 def _flush(speaker: str | None, words: list[Word]) -> Segment:
     text = " ".join(w.text.strip() for w in words).strip()
     return Segment(start=words[0].start, end=words[-1].end,
-                   speaker=speaker or "SPEAKER_00", text=text)
+                   speaker=speaker or "SPEAKER_00", text=text,
+                   lang=words[0].lang)

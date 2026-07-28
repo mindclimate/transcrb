@@ -59,8 +59,11 @@ print("Hebrew model ready.")
 PY
 fi
 
-# 4. Warm the English model cache (faster-whisper auto-downloads large-v3)
+# 4. Warm the model caches (faster-whisper auto-downloads these).
+#    `base` is the language-ID model: it scans a recording for language switches
+#    so a mixed Hebrew/English meeting is not transcribed as one language.
 .venv/bin/python -c "from faster_whisper import WhisperModel; WhisperModel('large-v3', device='cpu', compute_type='int8')"
+.venv/bin/python -c "from faster_whisper import WhisperModel; WhisperModel('base', device='cpu', compute_type='int8')"
 
 # 5. Audio routing for recording both sides of a call. On macOS 14.2+ this only
 #    verifies that a system-audio tap can be created — nothing to configure. On

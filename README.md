@@ -1,8 +1,8 @@
 # Transcrb
 
 Meeting transcription that runs entirely on your own Mac. Audio never leaves the
-machine — no account, no upload, no cloud service. English and Hebrew, with
-speaker labels.
+machine — no account, no upload, no cloud service. English and Hebrew, including
+calls that switch between them mid-conversation, with speaker labels.
 
 ## Install (once)
 

@@ -25,8 +25,13 @@ def to_markdown(result: TranscriptResult) -> str:
         f"- Duration: {fmt_timestamp(result.duration)}",
         "",
     ]
+    # In a mixed transcript the language of each line is worth stating: a reader
+    # skimming Hebrew and English together cannot otherwise tell whether a line
+    # was spoken in that language or rendered into it.
+    mixed = len({seg.lang for seg in result.segments if seg.lang}) > 1
     for seg in result.segments:
-        lines.append(f"[{fmt_timestamp(seg.start)}] {seg.speaker}: {seg.text}")
+        who = f"{seg.speaker} ({seg.lang})" if mixed and seg.lang else seg.speaker
+        lines.append(f"[{fmt_timestamp(seg.start)}] {who}: {seg.text}")
     return "\n".join(lines) + "\n"
 
 def to_srt(result: TranscriptResult) -> str:

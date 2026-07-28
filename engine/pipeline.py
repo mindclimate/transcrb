@@ -1,8 +1,9 @@
 import tempfile
 from pathlib import Path
 from engine.audio import normalize_audio, probe_duration
-from engine.detect import detect_language
-from engine.transcribe import load_model, transcribe_wav, model_ref
+from engine.detect import LangSpan, detect_language_spans
+from engine.transcribe import (load_detection_model, load_model, model_ref,
+                               transcribe_span, transcribe_wav)
 from engine.diarize import diarize_wav
 from engine.merge import merge_words_and_turns
 from engine.types import TranscriptResult
@@ -24,20 +25,38 @@ def transcribe_file(src: Path, config: Config, lang: str | None = None,
         progress("normalizing")
         normalize_audio(src, wav)
 
-        det_model = None
+        spans: list[LangSpan] | None = None
         if lang is None:
             progress("detecting language")
-            det_model = load_model("en", models_dir, config.compute_type)  # large-v3 is multilingual
-            lang, _prob = detect_language(wav, det_model, config.fallback_language)
-
-        progress("transcribing")
-        # Detection already loaded large-v3; reloading it for an English file
-        # would cost a second multi-GB load for the same weights.
-        if det_model is not None and model_ref(lang, models_dir) == model_ref("en", models_dir):
-            model = det_model
+            # One label for the whole file makes Whisper *translate* any span in
+            # the other language instead of transcribing it, so find the spans.
+            # A small model does this: cheap enough to probe every 2 seconds.
+            spans = detect_language_spans(wav, load_detection_model(config.compute_type),
+                                          config.fallback_language)
+            languages = list(dict.fromkeys(s.lang for s in spans))
+            if len(spans) == 1:
+                spans = None      # one language throughout: no slicing needed
         else:
-            model = load_model(lang, models_dir, config.compute_type)
-        words, duration = transcribe_wav(wav, model, lang)
+            languages = [lang]
+
+        def _model_for(language: str):
+            return load_model(language, models_dir, config.compute_type)
+
+        if spans is None:
+            # The common case, and the same single pass as before spans existed.
+            progress("transcribing")
+            words, duration = transcribe_wav(wav, _model_for(languages[0]),
+                                             languages[0])
+        else:
+            duration = probe_duration(wav)
+            words = []
+            for language in languages:
+                progress(f"transcribing {language}")
+                model = _model_for(language)
+                for span in [s for s in spans if s.lang == language]:
+                    words.extend(transcribe_span(wav, model, language,
+                                                 span.start, span.end))
+            words.sort(key=lambda w: w.start)
 
         turns = []
         if diarize:
@@ -48,8 +67,8 @@ def transcribe_file(src: Path, config: Config, lang: str | None = None,
         segments = merge_words_and_turns(words, turns)
 
     return TranscriptResult(
-        language=lang,
-        model=model_ref(lang, models_dir),
+        language="+".join(languages),
+        model="+".join(model_ref(l, models_dir) for l in languages),
         duration=duration,
         segments=segments,
         words=words,
