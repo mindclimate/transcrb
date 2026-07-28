@@ -55,5 +55,14 @@ fi
 # 4. Warm the English model cache (faster-whisper auto-downloads large-v3)
 .venv/bin/python -c "from faster_whisper import WhisperModel; WhisperModel('large-v3', device='cpu', compute_type='int8')"
 
+# 5. Audio routing for recording both sides of a call. On macOS 14.2+ this only
+#    verifies that a system-audio tap can be created — nothing to configure. On
+#    older macOS it creates the Multi-Output and Aggregate devices in CoreAudio
+#    that would otherwise have to be built by hand in Audio MIDI Setup.
+if [ "$(uname)" = "Darwin" ]; then
+  .venv/bin/python -m engine.macos_audio || \
+    echo "! Audio setup did not complete — see docs/SETUP.md for the manual steps."
+fi
+
 echo "== Setup complete. Double-click 'Start Transcrb' to run. =="
 echo "Reminder: set HF_TOKEN (HuggingFace) for speaker labels — see docs/SETUP.md."

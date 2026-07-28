@@ -22,6 +22,15 @@
     #result{white-space:pre-wrap;font-family:var(--mono);font-size:13px;
       background:var(--paper);padding:12px;max-height:50vh;overflow:auto}
     [dir=auto]{unicode-bidi:plaintext}
+    #meter{width:120px;height:8px;background:var(--line);border-radius:var(--r);
+      overflow:hidden}
+    #meterFill{height:100%;width:0;background:var(--accent);transition:width .12s linear}
+    #meterFill.dead{background:#c8442e}
+    #recLevel{font-family:var(--mono);font-size:11px;color:var(--muted)}
+    #recWarn{font-size:12px;line-height:1.5;margin-top:8px;padding:10px;
+      border-left:3px solid #c8442e;background:var(--sel);display:none}
+    #recWarn.show{display:block}
+    #recWarn button{margin-top:8px}
   </style>
 </head>
 <body>
@@ -60,11 +69,16 @@
         <button id="recStart">● Record</button>
         <button id="recStop" disabled>■ Stop</button>
         <span id="recTimer" style="font-family:var(--mono);font-size:12px"></span>
+        <div id="meter" title="Input level"><div id="meterFill"></div></div>
+        <span id="recLevel">—</span>
       </div>
       <div id="recNote" style="font-size:12px;color:var(--muted)">
-        Pick “BlackHole 2ch” to capture the other side of a call (needs a reboot after install).
-        Recordings transcribe automatically when you stop.
+        “Call audio + my mic (automatic)” captures both sides of a call with nothing to
+        configure — it follows your audio wherever it plays, so headphones, speakers and
+        swapping between them mid-call all work. The level is checked before recording
+        starts and while it runs. Recordings transcribe automatically when you stop.
       </div>
+      <div id="recWarn"></div>
     </div>
     <div class="panel">
       <h2>Result</h2>
@@ -140,7 +154,30 @@
     };
 
     // ---- recorder ----
-    let recId = null, recTimer = null;
+    // A silent input is the failure mode that costs the most: ffmpeg succeeds,
+    // the file is full-size, and only the transcript reveals there was never
+    // any audio. So levels get checked before the meeting, during it, and after.
+    let recId = null, recTimer = null, levelTimer = null, deadSince = null;
+
+    const deviceName = () => {
+      const sel = $("#device");
+      return sel.options[sel.selectedIndex]?.textContent?.trim() || "";
+    };
+
+    function showMeter(dbfs, silent) {
+      const fill = $("#meterFill");
+      if (dbfs === null || dbfs === undefined) {
+        fill.style.width = "0"; $("#recLevel").textContent = "—"; return;
+      }
+      // -60..0 dBFS across the bar; anything below is "no signal".
+      fill.style.width = Math.max(0, Math.min(100, (dbfs + 60) / 60 * 100)) + "%";
+      fill.classList.toggle("dead", silent);
+      $("#recLevel").textContent = silent ? "no signal" : `${dbfs.toFixed(0)} dBFS`;
+    }
+
+    function warn(html) { $("#recWarn").innerHTML = html; $("#recWarn").classList.add("show"); }
+    function clearWarn() { $("#recWarn").classList.remove("show"); $("#recWarn").innerHTML = ""; }
+
     (async () => {
       try {
         const { devices } = await (await fetch("/api/devices")).json();
@@ -155,29 +192,89 @@
       }
     })();
 
-    $("#recStart").onclick = async () => {
+    async function checkInput() {
       const fd = new FormData();
       fd.append("device", $("#device").value);
+      fd.append("name", deviceName());
+      showMeter(null);
+      $("#recLevel").textContent = "checking…";
+      const j = await (await fetch("/api/record/check", { method: "POST", body: fd })).json();
+      if (j.error) { warn(j.error); showMeter(null); return j; }
+      showMeter(j.peak_dbfs, j.silent);
+      if (j.silent) warn(j.hint); else clearWarn();
+      return j;
+    }
+
+    $("#device").onchange = () => { clearWarn(); showMeter(null); };
+
+    async function startRecording() {
+      const fd = new FormData();
+      fd.append("device", $("#device").value);
+      fd.append("name", deviceName());
       const r = await fetch("/api/record/start", { method: "POST", body: fd });
       const j = await r.json();
       if (!r.ok) { $("#status").textContent = "Error: " + (j.error || "could not start"); return; }
       recId = j.rec_id;
+      clearWarn();
       $("#recStart").disabled = true; $("#recStop").disabled = false;
       const t0 = Date.now();
+      deadSince = null;
       recTimer = setInterval(() => {
         const s = Math.floor((Date.now() - t0) / 1000);
         $("#recTimer").textContent =
           `● recording ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
       }, 500);
+      // Output routing can change mid-call — plugging in headphones is enough to
+      // switch away from the Multi-Output Device and kill the feed.
+      levelTimer = setInterval(async () => {
+        try {
+          const l = await (await fetch("/api/record/level?rec_id=" + recId)).json();
+          showMeter(l.peak_dbfs, l.silent);
+          if (l.silent) {
+            deadSince = deadSince ?? Date.now();
+            const secs = Math.round((Date.now() - deadSince) / 1000);
+            if (secs >= 10) warn(`No audio for ${secs}s — nothing is reaching ` +
+              `${deviceName() || "the input"}. Fix the routing now; this recording is silent so far.`);
+          } else { deadSince = null; clearWarn(); }
+        } catch (e) { /* metering is best-effort */ }
+      }, 1000);
+    }
+
+    $("#recStart").onclick = async () => {
+      $("#recStart").disabled = true;
+      try {
+        const check = await checkInput();
+        if (check.error) return;
+        if (check.silent) {
+          warn($("#recWarn").innerHTML +
+            '<div><button id="recAnyway">Record anyway</button></div>');
+          $("#recAnyway").onclick = () => startRecording();
+          return;
+        }
+        await startRecording();
+      } finally {
+        if (!recId) $("#recStart").disabled = false;
+      }
     };
 
     $("#recStop").onclick = async () => {
-      clearInterval(recTimer); $("#recTimer").textContent = "";
+      clearInterval(recTimer); clearInterval(levelTimer);
+      $("#recTimer").textContent = "";
       $("#recStop").disabled = true; $("#recStart").disabled = false;
       const fd = new FormData(); fd.append("rec_id", recId);
+      recId = null;
       const r = await fetch("/api/record/stop", { method: "POST", body: fd });
       const j = await r.json();
       if (!r.ok) { $("#status").textContent = "Error: " + (j.error || "stop failed"); return; }
+      if (j.silent) {
+        // Transcribing silence burns many minutes and yields "you" on repeat.
+        showMeter(j.peak_dbfs, true);
+        warn(`This recording is silent from start to finish — not transcribing it.<br>${j.hint}` +
+             `<br><br>The file is kept at <code>${j.path}</code>.`);
+        $("#status").textContent = "Recording was silent — nothing to transcribe.";
+        return;
+      }
+      clearWarn();
       const t = new FormData();
       t.append("server_path", j.path);
       await runTranscription(t);

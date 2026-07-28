@@ -12,9 +12,25 @@ from engine.config import load_config
 from engine.pipeline import transcribe_file
 from engine.output import write_outputs
 from engine import record as recorder
+from engine.macos_audio import CAPTURE_DEVICE_NAME
 
 log = logging.getLogger(__name__)
 HERE = Path(__file__).parent
+
+# One entry in the input list stands for "build a system-audio tap on demand".
+# It is not a real device until a recording starts.
+AUTO_DEVICE_ID = "auto"
+AUTO_DEVICE_NAME = "Call audio + my mic (automatic)"
+
+def _default_capture_factory():
+    """The tap-backed capture class, when this machine supports it."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        from engine import macos_audio
+    except Exception:
+        return None
+    return macos_audio.SystemCapture if macos_audio.taps_supported() else None
 
 # Long transcriptions are opaque without this: the pipeline reports each stage
 # against a client-supplied job id, and the page polls for it.
@@ -30,9 +46,13 @@ def _expire_progress() -> None:
     for k in [k for k, v in _PROGRESS.items() if v["at"] < cutoff]:
         _PROGRESS.pop(k, None)
 
-def create_app(cfg=None, runner=None) -> FastAPI:
+def create_app(cfg=None, runner=None, probe=None, capture=None) -> FastAPI:
+    """`capture` is the system-audio capture class: None auto-detects, False
+    disables it, or pass a class for tests."""
     cfg = cfg or load_config(Path("config.toml"))
     runner = runner or transcribe_file
+    probe = probe or recorder.probe_device_peak
+    capture_factory = _default_capture_factory() if capture is None else (capture or None)
     app = FastAPI()
     recordings: dict[str, dict] = {}
 
@@ -101,27 +121,94 @@ def create_app(cfg=None, runner=None) -> FastAPI:
             return JSONResponse({"error": f"{type(exc).__name__}: {exc}"},
                                 status_code=500)
 
+    def _open_capture():
+        """Build the on-demand capture device. Returns (instance, ":N")."""
+        if capture_factory is None:
+            raise RuntimeError("automatic system-audio capture needs macOS 14.2 or later")
+        instance = capture_factory()
+        return instance, instance.start()
+
     @app.get("/api/devices")
     def devices():
+        found, error = [], None
         try:
-            return {"devices": recorder.list_input_devices(sys.platform)}
+            found = recorder.list_input_devices(sys.platform)
         except Exception as exc:
             log.exception("Listing input devices failed")
-            return JSONResponse({"devices": [], "error": str(exc)}, status_code=200)
+            error = str(exc)
+        # Hide the transient capture device: it is offered as "automatic".
+        found = [d for d in found if d["name"].strip() != CAPTURE_DEVICE_NAME]
+        if capture_factory is not None:
+            found.insert(0, {"id": AUTO_DEVICE_ID, "name": AUTO_DEVICE_NAME})
+        body: dict = {"devices": found}
+        if error:
+            body["error"] = error
+        return body
+
+    @app.post("/api/record/check")
+    def record_check(device: str = Form(...), name: str = Form(default="")):
+        """Sample the device before committing to a meeting-length recording.
+
+        A virtual device like BlackHole 2ch opens happily and returns silence
+        when nothing is routed into it, which is indistinguishable from success
+        until the transcript comes back empty.
+        """
+        instance = None
+        try:
+            if device == AUTO_DEVICE_ID:
+                instance, device = _open_capture()
+                name = name or AUTO_DEVICE_NAME
+            peak = probe(device, sys.platform)
+        except Exception as exc:
+            log.exception("Could not probe input device")
+            return JSONResponse({"error": str(exc)}, status_code=200)
+        finally:
+            # Only a probe: hand the device back rather than holding the tap.
+            if instance is not None:
+                instance.stop()
+        silent = recorder.is_silent(peak)
+        body = {"peak_dbfs": round(peak, 1), "silent": silent}
+        if silent:
+            body["hint"] = recorder.silence_hint(name)
+        return body
 
     @app.post("/api/record/start")
-    def record_start(device: str = Form(...)):
+    def record_start(device: str = Form(...), name: str = Form(default="")):
         rec_id = uuid.uuid4().hex[:8]
         dest = cfg.output_dir / "recordings"
         dest.mkdir(parents=True, exist_ok=True)
         out = dest / f"recording-{time.strftime('%Y%m%d-%H%M%S')}.wav"
+        instance = None
         try:
+            if device == AUTO_DEVICE_ID:
+                instance, device = _open_capture()
+                name = name or AUTO_DEVICE_NAME
             proc = recorder.start_recording(device, out, sys.platform)
         except Exception as exc:
             log.exception("Could not start recording")
+            if instance is not None:
+                instance.stop()      # never leave a tap behind on failure
             return JSONResponse({"error": str(exc)}, status_code=500)
-        recordings[rec_id] = {"proc": proc, "path": out}
+        recordings[rec_id] = {"proc": proc, "path": out, "name": name,
+                              "capture": instance}
         return {"rec_id": rec_id, "path": str(out)}
+
+    @app.get("/api/record/level")
+    def record_level(rec_id: str):
+        """Peak level of the last couple of seconds, for the live meter.
+
+        Measured from the growing file rather than by opening the device a
+        second time — some inputs allow only one reader.
+        """
+        entry = recordings.get(rec_id)
+        if entry is None:
+            return JSONResponse({"error": "unknown recording"}, status_code=404)
+        try:
+            peak = recorder.peak_dbfs(entry["path"], tail_seconds=2.0)
+        except Exception:
+            # The file may not have its header yet in the first moments.
+            return {"peak_dbfs": None, "silent": False}
+        return {"peak_dbfs": round(peak, 1), "silent": recorder.is_silent(peak)}
 
     @app.post("/api/record/stop")
     def record_stop(rec_id: str = Form(...)):
@@ -129,10 +216,21 @@ def create_app(cfg=None, runner=None) -> FastAPI:
         if entry is None:
             return JSONResponse({"error": "unknown recording"}, status_code=404)
         recorder.stop_recording(entry["proc"])
+        if entry.get("capture") is not None:
+            # The tap lives in this process; releasing it removes the device
+            # from every app's input list again.
+            entry["capture"].stop()
         path = entry["path"]
         if not path.exists() or path.stat().st_size == 0:
             return JSONResponse({"error": "recording produced no audio"}, status_code=500)
-        return {"path": str(path), "bytes": path.stat().st_size}
+        # Size is not evidence of content: 24 minutes of silence is 46MB.
+        peak = recorder.peak_dbfs(path)
+        silent = recorder.is_silent(peak)
+        body = {"path": str(path), "bytes": path.stat().st_size,
+                "peak_dbfs": round(peak, 1), "silent": silent}
+        if silent:
+            body["hint"] = recorder.silence_hint(entry.get("name", ""))
+        return body
 
     @app.get("/api/file")
     def get_file(path: str):
