@@ -25,8 +25,9 @@ Double-click **Start Transcrb.command**. Your browser opens with two panels:
 Transcripts are saved in `out/`, one folder per recording, as Markdown, JSON and
 subtitles. Close the terminal window to stop Transcrb.
 
-Transcription is slower than real time — roughly 30–60 minutes of processing for
-a 40-minute meeting, because it runs locally on the CPU rather than on a server.
+Transcription is faster than real time: roughly 9 minutes of processing for a
+25-minute meeting, measured on an M1 Pro. Speech recognition runs on the CPU and
+speaker labelling on the Mac's GPU.
 
 ## Speaker labels
 

@@ -46,14 +46,16 @@ fi
 
 # 3. Fetch the ivrit.ai Hebrew model, already in CTranslate2 format.
 #    ivrit.ai publishes pre-converted CT2 weights, so no local conversion is needed.
-#    Alternatives: ivrit-ai/whisper-large-v3-turbo-ct2 (faster, slightly less accurate).
-if [ ! -d "models/ivrit-whisper-ct2" ]; then
-  echo "Downloading the Hebrew model (a few GB, one time)..."
+#    The turbo variant is the same fine-tune with 4 decoder layers instead of 32:
+#    measured 4.0x faster on this hardware, and half the size (1.6GB vs 2.9GB),
+#    which matters on a 16GB machine that was already swapping.
+if [ ! -d "models/ivrit-whisper-turbo-ct2" ]; then
+  echo "Downloading the Hebrew model (~1.6GB, one time)..."
   .venv/bin/python - <<'PY'
 from huggingface_hub import snapshot_download
 snapshot_download(
-    repo_id="ivrit-ai/whisper-large-v3-ct2",
-    local_dir="models/ivrit-whisper-ct2",
+    repo_id="ivrit-ai/whisper-large-v3-turbo-ct2",
+    local_dir="models/ivrit-whisper-turbo-ct2",
 )
 print("Hebrew model ready.")
 PY
@@ -62,7 +64,7 @@ fi
 # 4. Warm the model caches (faster-whisper auto-downloads these).
 #    `base` is the language-ID model: it scans a recording for language switches
 #    so a mixed Hebrew/English meeting is not transcribed as one language.
-.venv/bin/python -c "from faster_whisper import WhisperModel; WhisperModel('large-v3', device='cpu', compute_type='int8')"
+.venv/bin/python -c "from faster_whisper import WhisperModel; WhisperModel('large-v3-turbo', device='cpu', compute_type='int8')"
 .venv/bin/python -c "from faster_whisper import WhisperModel; WhisperModel('base', device='cpu', compute_type='int8')"
 
 # 5. Audio routing for recording both sides of a call. On macOS 14.2+ this only

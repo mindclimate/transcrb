@@ -11,6 +11,36 @@ def _default_factory(hf_token: str):
     except TypeError:
         return Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=hf_token)
 
+def _devices() -> list[str]:
+    """Devices to attempt, best first.
+
+    Diarization was the single most expensive stage in the pipeline while it ran
+    on the CPU: 119.5s against 15.1s on Metal for the same two minutes of audio,
+    roughly half of the total runtime. The accelerator therefore goes first.
+
+    A CPU entry always comes last. pyannote reaches torch ops that MPS does not
+    implement, and when it does the cost has to be speed rather than the speaker
+    labels themselves.
+    """
+    try:
+        import torch
+    except ImportError:            # torch is a hard dependency; be safe anyway
+        return ["cpu"]
+    if torch.backends.mps.is_available():
+        return ["mps", "cpu"]
+    if torch.cuda.is_available():
+        return ["cuda", "cpu"]
+    return ["cpu"]
+
+def _on_device(pipeline, device: str):
+    """Move `pipeline` to `device`, tolerating anything without pyannote's .to()."""
+    to = getattr(pipeline, "to", None)
+    if to is None:
+        return pipeline
+    import torch
+    # pyannote's .to() returns self; a stub that returns None must not erase it.
+    return to(torch.device(device)) or pipeline
+
 def _to_turns(result) -> list[SpeakerTurn]:
     """Read speaker turns from either pyannote API generation.
 
@@ -42,16 +72,26 @@ def diarize_wav(wav: Path, hf_token: str | None, pipeline_factory=None,
         log.warning("No HuggingFace token — skipping diarization; transcript will have one speaker.")
         return []
     factory = pipeline_factory or _default_factory
-    try:
-        pipeline = factory(hf_token)
-        kwargs = {"num_speakers": num_speakers} if num_speakers else {}
-        turns = _to_turns(pipeline(str(wav), **kwargs))
-        turns.sort(key=lambda t: t.start)
-        if not turns:
-            log.warning("Diarization produced no speaker turns.")
-        return turns
-    except Exception:
-        # Never fail the transcript over diarization — but say so loudly, or a
-        # silent failure is indistinguishable from a genuine single speaker.
-        log.exception("Diarization failed; continuing without speaker labels.")
-        return []
+    kwargs = {"num_speakers": num_speakers} if num_speakers else {}
+    devices = _devices()
+    for i, device in enumerate(devices):
+        last = i == len(devices) - 1
+        try:
+            # Rebuilt per attempt: a pipeline that failed partway through being
+            # moved to the GPU is not a safe thing to retry on the CPU.
+            pipeline = _on_device(factory(hf_token), device)
+            turns = _to_turns(pipeline(str(wav), **kwargs))
+            turns.sort(key=lambda t: t.start)
+            if not turns:
+                log.warning("Diarization produced no speaker turns.")
+            return turns
+        except Exception:
+            if not last:
+                log.warning("Diarization on %s failed; retrying on %s.",
+                            device, devices[i + 1], exc_info=True)
+                continue
+            # Never fail the transcript over diarization — but say so loudly, or
+            # a silent failure is indistinguishable from a genuine single speaker.
+            log.exception("Diarization failed; continuing without speaker labels.")
+            return []
+    return []

@@ -1,4 +1,6 @@
 from pathlib import Path
+import numpy as np
+import soundfile as sf
 import engine.pipeline as P
 from engine.detect import LangSpan
 from engine.types import Word, SpeakerTurn, Segment
@@ -8,14 +10,23 @@ def _cfg():
     return Config(output_dir=Path("out"), inbox=None, hf_token="tok",
                   compute_type="int8", fallback_language="en")
 
+def _fake_normalize(src, dst):
+    """Stand in for ffmpeg by writing real silence.
+
+    The pipeline reads the normalized file once and slices every span out of
+    those samples, so this has to be an actual readable wav rather than a path.
+    """
+    sf.write(str(dst), np.zeros(16000, dtype="float32"), 16000, subtype="PCM_16")
+    return dst
+
 def test_pipeline_wires_stages(monkeypatch, tmp_path):
-    monkeypatch.setattr(P, "normalize_audio", lambda src, dst: dst)
+    monkeypatch.setattr(P, "normalize_audio", _fake_normalize)
     monkeypatch.setattr(P, "load_detection_model", lambda ct: "detector")
     monkeypatch.setattr(P, "detect_language_spans",
-                        lambda wav, model, fallback: [LangSpan(0.0, 2.0, "he")])
+                        lambda audio, rate, model, fallback: [LangSpan(0.0, 2.0, "he")])
     monkeypatch.setattr(P, "load_model", lambda lang, md, ct: object())
     monkeypatch.setattr(P, "transcribe_wav",
-                        lambda wav, model, lang: ([Word(0.0, 2.0, "שלום")], 2.0))
+                        lambda audio, model, lang: ([Word(0.0, 2.0, "שלום")], 2.0))
     monkeypatch.setattr(P, "diarize_wav",
                         lambda wav, tok, num_speakers=None: [SpeakerTurn(0.0, 2.0, "SPEAKER_00")])
     src = tmp_path / "meeting.m4a"
@@ -31,12 +42,12 @@ def test_pipeline_respects_explicit_lang_and_no_diarize(monkeypatch, tmp_path):
     def _detect(*a, **k):
         called["detect"] = True
         return [LangSpan(0.0, 1.0, "en")]
-    monkeypatch.setattr(P, "normalize_audio", lambda src, dst: dst)
+    monkeypatch.setattr(P, "normalize_audio", _fake_normalize)
     monkeypatch.setattr(P, "load_detection_model", lambda ct: "detector")
     monkeypatch.setattr(P, "detect_language_spans", _detect)
     monkeypatch.setattr(P, "load_model", lambda lang, md, ct: object())
     monkeypatch.setattr(P, "transcribe_wav",
-                        lambda wav, model, lang: ([Word(0.0, 1.0, "hi")], 1.0))
+                        lambda audio, model, lang: ([Word(0.0, 1.0, "hi")], 1.0))
     src = tmp_path / "m.wav"; src.write_bytes(b"x")
     result = P.transcribe_file(src, _cfg(), lang="en", diarize=False)
     assert called["detect"] is False          # explicit lang skips detection
@@ -46,12 +57,12 @@ def test_english_autodetect_loads_large_v3_once(monkeypatch, tmp_path):
     # The detection model is separate and small; the transcription model must
     # still only be loaded a single time.
     loads = []
-    monkeypatch.setattr(P, "normalize_audio", lambda src, dst: dst)
+    monkeypatch.setattr(P, "normalize_audio", _fake_normalize)
     monkeypatch.setattr(P, "load_detection_model", lambda ct: "detector")
     monkeypatch.setattr(P, "detect_language_spans",
-                        lambda wav, model, fallback: [LangSpan(0.0, 1.0, "en")])
+                        lambda audio, rate, model, fallback: [LangSpan(0.0, 1.0, "en")])
     monkeypatch.setattr(P, "load_model", lambda lang, md, ct: loads.append(lang) or object())
-    monkeypatch.setattr(P, "transcribe_wav", lambda wav, model, lang: ([Word(0.0, 1.0, "hi")], 1.0))
+    monkeypatch.setattr(P, "transcribe_wav", lambda audio, model, lang: ([Word(0.0, 1.0, "hi")], 1.0))
     monkeypatch.setattr(P, "diarize_wav", lambda wav, tok, num_speakers=None: [])
     src = tmp_path / "m.wav"; src.write_bytes(b"x")
     P.transcribe_file(src, _cfg(), lang=None, diarize=False)
@@ -59,12 +70,12 @@ def test_english_autodetect_loads_large_v3_once(monkeypatch, tmp_path):
 
 def test_hebrew_autodetect_loads_hebrew_model(monkeypatch, tmp_path):
     loads = []
-    monkeypatch.setattr(P, "normalize_audio", lambda src, dst: dst)
+    monkeypatch.setattr(P, "normalize_audio", _fake_normalize)
     monkeypatch.setattr(P, "load_detection_model", lambda ct: "detector")
     monkeypatch.setattr(P, "detect_language_spans",
-                        lambda wav, model, fallback: [LangSpan(0.0, 1.0, "he")])
+                        lambda audio, rate, model, fallback: [LangSpan(0.0, 1.0, "he")])
     monkeypatch.setattr(P, "load_model", lambda lang, md, ct: loads.append(lang) or object())
-    monkeypatch.setattr(P, "transcribe_wav", lambda wav, model, lang: ([Word(0.0, 1.0, "שלום")], 1.0))
+    monkeypatch.setattr(P, "transcribe_wav", lambda audio, model, lang: ([Word(0.0, 1.0, "שלום")], 1.0))
     monkeypatch.setattr(P, "diarize_wav", lambda wav, tok, num_speakers=None: [])
     src = tmp_path / "m.wav"; src.write_bytes(b"x")
     P.transcribe_file(src, _cfg(), lang=None, diarize=False)
@@ -85,25 +96,25 @@ def _stub_stages(monkeypatch, spans, *, duration=90.0):
     """Wire the pipeline to fake audio, detection and diarization."""
     loaded = []
     spanned = []
-    monkeypatch.setattr(P, "normalize_audio", lambda src, dst: dst)
+    monkeypatch.setattr(P, "normalize_audio", _fake_normalize)
     monkeypatch.setattr(P, "load_detection_model", lambda ct: "detector")
     monkeypatch.setattr(P, "probe_duration", lambda wav: duration)
     monkeypatch.setattr(P, "detect_language_spans",
-                        lambda wav, model, fallback: spans)
+                        lambda audio, rate, model, fallback: spans)
     monkeypatch.setattr(P, "diarize_wav", lambda wav, tok, num_speakers=None: [])
 
     def _load(language, models_dir, compute_type):
         loaded.append(language)
         return f"model:{language}"
 
-    def _span(wav, model, language, start, end):
+    def _span(audio, rate, model, language, start, end):
         spanned.append({"model": model, "lang": language, "start": start, "end": end})
         return [W(start, end, f"{language}-text", lang=language)]
 
     monkeypatch.setattr(P, "load_model", _load)
     monkeypatch.setattr(P, "transcribe_span", _span)
     monkeypatch.setattr(P, "transcribe_wav",
-                        lambda wav, model, lang: ([W(0.0, duration, "whole", lang=lang)],
+                        lambda audio, model, lang: ([W(0.0, duration, "whole", lang=lang)],
                                                   duration))
     return loaded, spanned
 

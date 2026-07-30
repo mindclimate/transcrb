@@ -22,15 +22,54 @@
 3. Double-click **Start Transcrb.command** — your browser opens the UI.
 
 ## Speed
-Transcription is CPU-only (CTranslate2 has no Metal backend). On an M1 Pro expect
-roughly **30–60 minutes for a 42-minute meeting** with speaker labels on. Picking the
-language explicitly instead of Auto-detect skips the language scan, so it is
-somewhat faster — worth doing when you know the meeting is in one language.
+Faster than real time: **about 9 minutes for a 25-minute meeting** with speaker
+labels on, measured end-to-end on an M1 Pro with a single-language recording.
+Picking the language explicitly instead of Auto-detect skips the language scan and
+saves a further ~20%. A meeting that switches language mid-call loads both models
+and transcribes span by span, so expect somewhat longer.
+
+Speech recognition is CPU-only — CTranslate2 has no Metal backend — but speaker
+labelling is not, and both were re-measured rather than assumed. For 4 minutes of
+audio, before and after:
+
+| stage | was | now | |
+|---|---|---|---|
+| language scan | 24.9s | 19.2s | unchanged code |
+| transcription | 267.7s | 48.0s | **5.6x** — turbo models |
+| speaker labels | 244.5s | 18.4s | **13.3x** — pyannote on Metal |
+| **total** | **537.1s** | **85.7s** | **6.3x** |
+
+Two things produced that, and the order is worth knowing if you tune further:
+
+1. **Speaker labelling was nearly half the runtime** and nobody had noticed,
+   because it looked like a fixed cost. pyannote moves to the GPU with one call;
+   an op MPS cannot handle falls back to the CPU rather than dropping labels.
+2. **Model architecture beat compute backend.** The turbo models keep all 32
+   encoder layers but have 4 decoder layers instead of 32. Turbo on the CPU
+   (4.25x realtime) measured *faster* than the previous weights on the GPU via
+   MLX (3.48x) — so the cheap change was swapping models, not rewriting the
+   inference backend.
+
+Two further options were measured and **one was rejected**:
+
+- **Batched decoding** is a further 1.7x and was turned down: it drops speech.
+  On four minutes of English it returned 596 words where sequential returned 668,
+  and on a Hebrew clip it silently lost an entire opening sentence. A transcript
+  that is missing words while reading fluently is the failure this project cares
+  most about avoiding, so the speed is not worth it.
+- **Whisper on Metal via MLX** is genuinely promising and untaken: a turbo model
+  reached 11.8x realtime against the 4.25x we now get on the CPU. It needs the
+  ivrit.ai turbo weights converted to MLX format and a second inference backend
+  to maintain, so it is a project rather than a switch.
+
+The next cheap win is the language scan, now ~20% of the total. Probing at a 4s
+hop and refining only around disagreements would roughly halve it while still
+catching every span longer than the 5s minimum.
 
 ## Languages, including meetings that switch mid-call
 Leave the picker on **Auto-detect** and a recording that moves between Hebrew and
 English is handled correctly: each stretch is transcribed by the model that
-matches it — Hebrew by the ivrit.ai model, English by large-v3 — and the
+matches it — Hebrew by the ivrit.ai model, English by large-v3-turbo — and the
 transcript reports `he+en` with each line tagged by language.
 
 This matters more than it sounds. Whisper decides one language per file from its
@@ -51,8 +90,8 @@ How it works, and why it looks the way it does. Two measured facts drove it:
 2. **A small model is both cheaper and better at this.** `base` scored 19/19 on a
    clip that large-v3 read as pure English, at ~20x less cost per probe. So
    language ID uses `base` (downloaded by setup, ~150MB) while transcription
-   still uses large-v3 and the ivrit.ai model. A Hebrew-only meeting now never
-   loads large-v3 at all.
+   still uses the full-size turbo models. A Hebrew-only meeting never loads the
+   English model at all.
 
 Contiguous probes become spans; anything under 5 seconds is treated as detector
 noise and absorbed into its neighbour, and an unsupported answer (Whisper
@@ -60,7 +99,9 @@ occasionally says Arabic for Hebrew) inherits from its neighbours.
 
 Costs and limits:
 - The scan runs at about 0.08x realtime — roughly 2 minutes for a 24-minute
-  meeting, against 30–60 minutes of transcription. Models load in ~3.5s each.
+  meeting. That was noise next to transcription before; now that transcription is
+  5.6x faster the scan is about a fifth of the total, so it is the next thing
+  worth optimizing. Models load in ~4s each.
 - Boundary precision is the 2-second probe hop. Switching language
   **mid-sentence** can leave a second or two on the wrong side of a boundary,
   and that fragment gets translated. Switches at sentence boundaries — how

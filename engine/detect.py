@@ -2,8 +2,6 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-import soundfile as sf
-
 SUPPORTED = {"he", "en"}
 
 # Whisper decides a language from one 30s mel window, so a file gets one label
@@ -118,11 +116,9 @@ def scan_language_spans(duration: float, detect, *,
 
     return _absorb_short_spans(_coalesce(filled), min_span)
 
-def detect_language_spans(wav: Path, model, fallback: str = "en",
+def detect_language_spans(audio, rate: int, model, fallback: str = "en",
                           **kwargs) -> list[LangSpan]:
-    """Language spans of a 16kHz mono wav, using Whisper's own language ID."""
-    audio, rate = sf.read(str(wav), dtype="float32")
-
+    """Language spans of 16kHz mono samples, using Whisper's own language ID."""
     def detect(start: float, end: float) -> tuple[str, float]:
         chunk = audio[int(start * rate):int(end * rate)]
         lang, prob, _all = model.detect_language(audio=chunk)

@@ -18,6 +18,7 @@ import pytest
 
 from engine.config import Config
 from engine.pipeline import transcribe_file
+from engine.transcribe import model_ref
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mixed_en_he.wav"
 MODELS = Path(__file__).resolve().parent.parent / "models"
@@ -26,7 +27,9 @@ pytestmark = [
     pytest.mark.slow,
     pytest.mark.skipif(not FIXTURE.exists(),
                        reason="run tests/fixtures/make_mixed_speech.sh first"),
-    pytest.mark.skipif(not (MODELS / "ivrit-whisper-ct2").exists(),
+    # Whichever Hebrew weights the code resolves to, not a hardcoded directory:
+    # this guard silently skipped the whole file when the model moved.
+    pytest.mark.skipif(not Path(model_ref("he", MODELS)).exists(),
                        reason="Hebrew model not downloaded"),
 ]
 
