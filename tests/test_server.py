@@ -263,3 +263,120 @@ def test_check_probes_the_capture_device_and_releases_it(tmp_path):
                                           data={"device": AUTO_DEVICE_ID}).json()
     assert body["silent"] is False
     assert _FakeCapture.instances[-1].stopped    # not left holding the device
+
+def test_stop_releases_the_tap_even_when_stopping_the_recorder_fails(tmp_path, monkeypatch):
+    """A tap outlives the process that forgot it, polluting every app's input list.
+
+    Releasing it must not depend on the recorder shutting down cleanly.
+    """
+    _FakeCapture.instances = []
+    def _start(device, out, platform):
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        sf.write(str(out), np.zeros(1600, dtype="float32"), 16000, subtype="PCM_16")
+        return object()
+    monkeypatch.setattr(S.recorder, "start_recording", _start)
+    monkeypatch.setattr(S.recorder, "stop_recording",
+                        lambda proc: (_ for _ in ()).throw(RuntimeError("ffmpeg would not die")))
+    client = _capture_client(tmp_path)
+    rec_id = client.post("/api/record/start",
+                         data={"device": AUTO_DEVICE_ID}).json()["rec_id"]
+    r = client.post("/api/record/stop", data={"rec_id": rec_id})
+    assert r.status_code == 500
+    assert "ffmpeg would not die" in r.json()["error"]
+    assert _FakeCapture.instances[-1].stopped
+
+def test_shutdown_releases_a_tap_left_open_by_an_unstopped_recording(tmp_path, monkeypatch):
+    """Closing the terminal is how this app is stopped, mid-recording included."""
+    _FakeCapture.instances = []
+    killed = []
+    def _start(device, out, platform):
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        sf.write(str(out), np.zeros(1600, dtype="float32"), 16000, subtype="PCM_16")
+        return object()
+    monkeypatch.setattr(S.recorder, "start_recording", _start)
+    monkeypatch.setattr(S.recorder, "stop_recording", lambda proc: killed.append(proc))
+    from engine.config import Config
+    cfg = Config(output_dir=tmp_path / "out", inbox=None, hf_token=None,
+                 compute_type="int8", fallback_language="en")
+    app = create_app(cfg=cfg, runner=_runner, capture=_FakeCapture,
+                     probe=lambda device, platform: -30.0)
+    with TestClient(app) as client:            # context manager fires shutdown
+        client.post("/api/record/start", data={"device": AUTO_DEVICE_ID})
+    assert _FakeCapture.instances[-1].stopped
+    assert killed, "the recorder process was left running"
+
+
+# ---- one transcription at a time ---------------------------------------------
+# Two at once on one machine is slower than one after the other: each loads its
+# own multi-GB model, holds the whole recording in memory, and reaches for the
+# same GPU. Nothing in the UI prevented a second click.
+
+import threading
+import time as _time
+
+def _slot_client(tmp_path, runner):
+    from engine.config import Config
+    cfg = Config(output_dir=tmp_path / "out", inbox=None, hf_token=None,
+                 compute_type="int8", fallback_language="en")
+    return create_app(cfg=cfg, runner=runner)
+
+def test_two_transcriptions_never_run_at_the_same_time(tmp_path):
+    seen_together = []
+    active = []
+    guard = threading.Lock()
+
+    def slow(src, cfg, lang, diarize, progress=None, num_speakers=None):
+        with guard:
+            active.append(1)
+            if len(active) > 1:
+                seen_together.append(True)
+        _time.sleep(0.4)
+        with guard:
+            active.pop()
+        return TranscriptResult(language="en", model="m", duration=1.0,
+                                segments=[Segment(0.0, 1.0, "SPEAKER_00", "hi")])
+
+    app = _slot_client(tmp_path, slow)
+    def fire(n):
+        TestClient(app).post("/api/transcribe",
+                             files={"file": (f"c{n}.wav", b"x", "audio/wav")},
+                             data={"diarize": "false"})
+    threads = [threading.Thread(target=fire, args=(i,)) for i in range(2)]
+    for t in threads: t.start()
+    for t in threads: t.join(timeout=20)
+    assert not seen_together, "two transcriptions overlapped"
+
+def test_a_waiting_transcription_reports_that_it_is_queued(tmp_path):
+    running = threading.Event()
+    release = threading.Event()
+
+    def blocking(src, cfg, lang, diarize, progress=None, num_speakers=None):
+        running.set()
+        release.wait(timeout=20)
+        return TranscriptResult(language="en", model="m", duration=1.0,
+                                segments=[Segment(0.0, 1.0, "SPEAKER_00", "hi")])
+
+    app = _slot_client(tmp_path, blocking)
+    def fire(job):
+        TestClient(app).post("/api/transcribe",
+                             files={"file": (f"{job}.wav", b"x", "audio/wav")},
+                             data={"diarize": "false", "job": job})
+    first = threading.Thread(target=fire, args=("job-a",))
+    first.start()
+    assert running.wait(timeout=10), "the first transcription never started"
+    second = threading.Thread(target=fire, args=("job-b",))
+    second.start()
+    try:
+        reader = TestClient(app)
+        deadline = _time.time() + 10
+        stage = ""
+        while _time.time() < deadline:
+            stage = reader.get("/api/progress", params={"job": "job-b"}).json()["stage"]
+            if stage == "queued":
+                break
+            _time.sleep(0.05)
+        assert stage == "queued", f"second job reported {stage!r}, not 'queued'"
+    finally:
+        release.set()
+        first.join(timeout=20)
+        second.join(timeout=20)

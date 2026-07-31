@@ -1,11 +1,15 @@
 import argparse
+import logging
 import sys
 from pathlib import Path
-from engine.config import DEFAULT_CONFIG_PATH, load_config
+from engine.config import DEFAULT_CONFIG_PATH, PROJECT_ROOT, load_config
+from engine.logs import setup_logging
 from engine.pipeline import transcribe_file
 from engine.output import write_outputs
 
 AUDIO_EXTS = {".m4a", ".mp3", ".wav", ".mp4", ".aac", ".flac", ".ogg", ".webm"}
+
+log = logging.getLogger(__name__)
 
 def _iter_audio(path: Path):
     if path.is_dir():
@@ -23,6 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default=None)
     ap.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
     args = ap.parse_args(argv)
+    setup_logging(PROJECT_ROOT / "logs")
 
     path = Path(args.path)
     if not path.exists():
@@ -46,6 +51,9 @@ def main(argv: list[str] | None = None) -> int:
                                      num_speakers=args.speakers,
                                      progress=lambda s: print(f"  {s}"))
         except Exception as e:  # loud, specific, per spec
+            # The message goes to the person; the traceback goes to the log, so
+            # a failure is still diagnosable after the terminal is closed.
+            log.exception("Transcription failed for %s", f)
             print(f"error transcribing {f.name}: {e}", file=sys.stderr)
             return 1
         paths = write_outputs(result, out_dir, f.stem, inbox=inbox)

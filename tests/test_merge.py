@@ -90,3 +90,62 @@ def test_single_language_words_still_merge_into_one_segment():
     words = [Word(0.0, 1.0, "one", lang="en"), Word(1.1, 2.0, "two", lang="en")]
     segs = merge_words_and_turns(words, [])
     assert len(segs) == 1 and segs[0].lang == "en"
+
+
+# ---- speaker assignment on long recordings -----------------------------------
+# Comparing every word against every turn is quadratic: a three-hour meeting is
+# ~36k words against ~3.3k turns, so the scan alone runs into minutes. The
+# bucketed lookup must give *identical* labels — a faster merge that reassigns
+# speech to the wrong person is the failure this project exists to prevent.
+
+import random
+import time as _time
+from engine.merge import _assign_speaker, _overlap
+
+def _assign_by_linear_scan(word, turns):
+    """The original implementation, kept as the oracle."""
+    best_speaker, best_overlap = "SPEAKER_00", -1.0
+    for t in turns:
+        ov = _overlap(word.start, word.end, t.start, t.end)
+        if ov > best_overlap:
+            best_overlap, best_speaker = ov, t.speaker
+    return best_speaker
+
+def test_assignment_matches_the_linear_scan_on_random_recordings():
+    rng = random.Random(20260730)
+    for _ in range(40):
+        turns, t = [], 0.0
+        for i in range(rng.randint(1, 60)):
+            start = t + rng.uniform(-0.3, 2.0)      # gaps and overlaps both occur
+            end = start + rng.uniform(0.05, 8.0)
+            turns.append(SpeakerTurn(start, end, f"SPEAKER_{i % 4:02d}"))
+            t = end
+        span = max(x.end for x in turns) + 3.0
+        for _ in range(200):
+            ws = rng.uniform(-1.0, span)
+            word = Word(ws, ws + rng.uniform(0.01, 1.5), "w")
+            assert _assign_speaker(word, turns) == _assign_by_linear_scan(word, turns)
+
+def test_a_word_in_silence_keeps_the_historical_fallback():
+    # No turn overlaps it at all. The original picked the first turn in the list
+    # (its "best" started below zero overlap), and downstream output depends on
+    # that, so the behaviour is pinned rather than quietly improved.
+    turns = [SpeakerTurn(10.0, 11.0, "SPEAKER_01"), SpeakerTurn(12.0, 13.0, "SPEAKER_02")]
+    assert _assign_speaker(Word(0.0, 0.5, "quiet"), turns) == "SPEAKER_01"
+
+def test_unsorted_turns_are_handled():
+    turns = [SpeakerTurn(5.0, 6.0, "SPEAKER_01"), SpeakerTurn(0.0, 1.0, "SPEAKER_00")]
+    assert _assign_speaker(Word(0.2, 0.8, "early"), turns) == "SPEAKER_00"
+    assert _assign_speaker(Word(5.2, 5.8, "late"), turns) == "SPEAKER_01"
+
+def test_a_long_recording_merges_quickly():
+    # 3 hours: ~36k words against ~3.3k turns. The quadratic scan needed over a
+    # minute here; the bound is deliberately loose, it only has to catch a
+    # regression back to quadratic.
+    turns = [SpeakerTurn(i * 3.2, i * 3.2 + 3.0, f"SPEAKER_{i % 3:02d}")
+             for i in range(3300)]
+    words = [Word(i * 0.3, i * 0.3 + 0.25, "word") for i in range(36000)]
+    start = _time.perf_counter()
+    segs = merge_words_and_turns(words, turns)
+    assert _time.perf_counter() - start < 10.0
+    assert segs

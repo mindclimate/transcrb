@@ -1,5 +1,6 @@
 models/
 out/
+logs/
 __pycache__/
 *.pyc
 .venv/
@@ -10,3 +11,4 @@ config/config.toml
 *.mp4
 *.egg-info/
 .pytest_cache/
+.DS_Store

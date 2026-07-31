@@ -42,3 +42,22 @@ def test_load_config_uses_the_default_path_when_given_nothing():
     from engine.config import load_config
     cfg = load_config()          # must not raise when config.toml is absent
     assert cfg.compute_type in ("int8", "int8_float16")
+
+def test_a_relative_output_dir_is_anchored_to_the_project_root(tmp_path, monkeypatch):
+    """`output_dir = "out"` must mean the same folder wherever it was started.
+
+    The server resolves this path to decide which files it is allowed to serve,
+    so a working directory that differs from the project root would both write
+    transcripts somewhere unexpected and shift that boundary.
+    """
+    from engine.config import PROJECT_ROOT
+    p = tmp_path / "config.toml"
+    p.write_text('output_dir = "out"\n')
+    monkeypatch.chdir(tmp_path)
+    cfg = load_config(p)
+    assert cfg.output_dir == PROJECT_ROOT / "out"
+
+def test_an_absolute_output_dir_is_left_alone(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text(f'output_dir = "{tmp_path / "somewhere"}"\n')
+    assert load_config(p).output_dir == tmp_path / "somewhere"

@@ -10,15 +10,47 @@ SENTENCE_ENDINGS = (".", "?", "!", "。", "؟")
 def _overlap(a_start, a_end, b_start, b_end) -> float:
     return max(0.0, min(a_end, b_end) - max(a_start, b_start))
 
-def _assign_speaker(word: Word, turns: list[SpeakerTurn]) -> str:
-    best_speaker = "SPEAKER_00"
-    best_overlap = -1.0
-    for t in turns:
+# Comparing every word against every turn is quadratic, and meetings are long: a
+# three-hour recording is ~36k words against ~3.3k turns, where the scan alone
+# ran over a minute. Turns are bucketed by time so each word only looks at the
+# handful that could possibly overlap it.
+_BUCKET_SECONDS = 5.0
+
+def _buckets(start: float, end: float) -> range:
+    return range(int(start // _BUCKET_SECONDS), int(end // _BUCKET_SECONDS) + 1)
+
+def _bucket_index(turns: list[SpeakerTurn]) -> dict[int, list[int]]:
+    """Time slot -> indices of the turns touching it, ascending.
+
+    Any two intervals that overlap by a positive amount share at least one slot,
+    so a turn absent from a word's slots cannot have beaten the winner.
+    """
+    index: dict[int, list[int]] = {}
+    for i, t in enumerate(turns):
+        for b in _buckets(t.start, t.end):
+            index.setdefault(b, []).append(i)
+    return index
+
+def _assign_speaker(word: Word, turns: list[SpeakerTurn],
+                    index: dict[int, list[int]] | None = None) -> str:
+    if not turns:
+        return "SPEAKER_00"
+    index = _bucket_index(turns) if index is None else index
+    candidates: set[int] = set()
+    for b in _buckets(word.start, word.end):
+        candidates.update(index.get(b, ()))
+    best_speaker, best_overlap = None, 0.0
+    # Ascending index order so an exact tie goes to the earlier turn, which is
+    # what the original full scan did.
+    for i in sorted(candidates):
+        t = turns[i]
         ov = _overlap(word.start, word.end, t.start, t.end)
         if ov > best_overlap:
-            best_overlap = ov
-            best_speaker = t.speaker
-    return best_speaker
+            best_overlap, best_speaker = ov, t.speaker
+    # A word sitting in silence overlaps nothing. The original scan started its
+    # best at below-zero overlap and so returned the first turn in the list;
+    # transcripts already carry that attribution, so it is preserved.
+    return turns[0].speaker if best_speaker is None else best_speaker
 
 def _should_break(cur_words: list[Word], word: Word) -> bool:
     """True when the run so far should be closed before adding `word`."""
@@ -38,8 +70,9 @@ def merge_words_and_turns(words: list[Word], turns: list[SpeakerTurn]) -> list[S
     segments: list[Segment] = []
     cur_speaker = None
     cur_words: list[Word] = []
+    index = _bucket_index(turns) if turns else None
     for w in words:
-        speaker = _assign_speaker(w, turns) if turns else "SPEAKER_00"
+        speaker = _assign_speaker(w, turns, index) if turns else "SPEAKER_00"
         # A language switch always ends the segment: one line must not mix
         # scripts, which would read as gibberish in both directions.
         language_changed = bool(cur_words) and w.lang != cur_words[-1].lang

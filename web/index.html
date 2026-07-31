@@ -102,6 +102,7 @@
     drop.addEventListener("drop", e => { chosen = e.dataTransfer.files[0]; drop.textContent = chosen.name; });
 
     const STAGE_TEXT = {
+      queued: "Waiting for the current transcription to finish…",
       normalizing: "Converting audio…",
       "detecting language": "Finding which languages are spoken…",
       transcribing: "Transcribing… (the long part)",
@@ -130,6 +131,9 @@
       fd.append("diarize", $("#diarize").checked ? "true" : "false");
       fd.append("speakers", $("#speakers").value);
 
+      // The server runs one transcription at a time, so a second click would
+      // only sit in the queue while looking like it had started.
+      $("#go").disabled = true;
       const started = Date.now();
       const tick = setInterval(async () => {
         try {
@@ -155,6 +159,7 @@
         $("#status").textContent = "Error: " + err.message;
       } finally {
         clearInterval(tick);
+        $("#go").disabled = false;
       }
     }
 

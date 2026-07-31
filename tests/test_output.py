@@ -88,3 +88,92 @@ def test_srt_stays_plain_text_for_players():
     srt = to_srt(_mixed_result())
     assert "(en)" not in srt and "(he)" not in srt
     assert "שלום לכולם" in srt
+
+
+# ---- re-transcribing must not destroy the previous transcript -----------------
+# Running a recording again with different settings used to overwrite the first
+# result in place, so there was no way to compare the two — and no warning that
+# the earlier one was gone.
+
+import os
+from engine.output import ARCHIVE_DIRNAME
+
+def _archives(out, name):
+    root = out / name / ARCHIVE_DIRNAME
+    return sorted(p.name for p in root.iterdir()) if root.exists() else []
+
+def test_a_first_run_archives_nothing(tmp_path):
+    out = tmp_path / "out"
+    write_outputs(_sample(), out, "meeting-x")
+    assert _archives(out, "meeting-x") == []
+
+def test_re_running_keeps_the_previous_transcript(tmp_path):
+    out = tmp_path / "out"
+    write_outputs(_sample(), out, "meeting-x")
+    first = (out / "meeting-x" / "transcript.md").read_text(encoding="utf-8")
+    # A second run with a different result, as a different speaker count gives.
+    write_outputs(_single_result(), out, "meeting-x")
+
+    kept = _archives(out, "meeting-x")
+    assert len(kept) == 1
+    archived = out / "meeting-x" / ARCHIVE_DIRNAME / kept[0]
+    assert archived.joinpath("transcript.md").read_text(encoding="utf-8") == first
+    # every artefact of the old run travels together
+    assert {p.name for p in archived.iterdir()} == {
+        "transcript.md", "transcript.srt", "transcript.json"}
+
+def test_the_canonical_paths_always_hold_the_newest_run(tmp_path):
+    """Downstream ingestion reads transcript.md; it must not have to look."""
+    out = tmp_path / "out"
+    write_outputs(_sample(), out, "meeting-x")
+    written = write_outputs(_single_result(), out, "meeting-x")
+    assert written["md"] == out / "meeting-x" / "transcript.md"
+    assert "hello" in written["md"].read_text(encoding="utf-8")
+
+def test_a_third_run_keeps_both_earlier_ones(tmp_path):
+    out = tmp_path / "out"
+    for i in range(3):
+        write_outputs(_sample(), out, "meeting-x")
+        # Distinct mtimes: archives are labelled by when the run was produced.
+        stamp = 1_700_000_000 + i * 3600
+        for f in (out / "meeting-x").glob("transcript.*"):
+            os.utime(f, (stamp, stamp))
+    assert len(_archives(out, "meeting-x")) == 2
+
+def test_two_runs_sharing_a_timestamp_do_not_collide(tmp_path):
+    out = tmp_path / "out"
+    for _ in range(3):
+        write_outputs(_sample(), out, "meeting-x")
+        for f in (out / "meeting-x").glob("transcript.*"):
+            os.utime(f, (1_700_000_000, 1_700_000_000))   # identical every time
+    kept = _archives(out, "meeting-x")
+    assert len(kept) == 2 and len(set(kept)) == 2
+
+def test_words_json_is_archived_with_its_transcript(tmp_path):
+    out = tmp_path / "out"
+    from engine.types import Word
+    with_words = TranscriptResult(
+        language="en", model="m", duration=1.0,
+        segments=[Segment(0.0, 1.0, "SPEAKER_00", "hi")],
+        words=[Word(0.0, 1.0, "hi", lang="en")])
+    write_outputs(with_words, out, "meeting-x")
+    write_outputs(with_words, out, "meeting-x")
+    archived = out / "meeting-x" / ARCHIVE_DIRNAME / _archives(out, "meeting-x")[0]
+    assert archived.joinpath("words.json").is_file()
+
+def test_the_archive_is_never_swept_into_a_later_archive(tmp_path):
+    out = tmp_path / "out"
+    for _ in range(3):
+        write_outputs(_sample(), out, "meeting-x")
+    root = out / "meeting-x" / ARCHIVE_DIRNAME
+    for archived in root.iterdir():
+        assert not (archived / ARCHIVE_DIRNAME).exists()
+
+def test_the_inbox_copy_is_replaced_not_archived(tmp_path):
+    """The inbox is a drop point that gets consumed; duplicates there would be
+    ingested twice."""
+    out, inbox = tmp_path / "out", tmp_path / "inbox"
+    write_outputs(_sample(), out, "meeting-x", inbox=inbox)
+    write_outputs(_single_result(), out, "meeting-x", inbox=inbox)
+    assert sorted(p.name for p in inbox.iterdir()) == ["meeting-x.json", "meeting-x.md"]
+    assert "hello" in (inbox / "meeting-x.md").read_text(encoding="utf-8")

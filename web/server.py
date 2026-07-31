@@ -2,13 +2,16 @@ import logging
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.concurrency import run_in_threadpool
-from engine.config import load_config
+from engine.config import PROJECT_ROOT, load_config
+from engine.logs import setup_logging
 from engine.pipeline import transcribe_file
 from engine.output import write_outputs
 from engine import record as recorder
@@ -16,6 +19,14 @@ from engine.macos_audio import CAPTURE_DEVICE_NAME
 
 log = logging.getLogger(__name__)
 HERE = Path(__file__).parent
+LOG_DIR = PROJECT_ROOT / "logs"
+
+# Only one transcription runs at a time. Two at once on one machine is slower
+# than one after the other — each loads its own multi-GB model, holds the whole
+# recording in memory and reaches for the same GPU — and nothing in the UI
+# stopped a second click. A waiting request reports "queued" rather than
+# looking stalled.
+_TRANSCRIBE_SLOT = threading.Semaphore(1)
 
 # One entry in the input list stands for "build a system-audio tap on demand".
 # It is not a real device until a recording starts.
@@ -53,8 +64,30 @@ def create_app(cfg=None, runner=None, probe=None, capture=None) -> FastAPI:
     runner = runner or transcribe_file
     probe = probe or recorder.probe_device_peak
     capture_factory = _default_capture_factory() if capture is None else (capture or None)
-    app = FastAPI()
     recordings: dict[str, dict] = {}
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        # Closing the terminal window is how this app is stopped, and that can
+        # happen mid-recording. A tap outlives the process that forgot it and
+        # then shows up in every other app's input list, so it is released here
+        # even though the request that created it never came back.
+        while recordings:
+            _rec_id, entry = recordings.popitem()
+            log.warning("Releasing a recording still running at shutdown: %s",
+                        entry.get("path"))
+            try:
+                recorder.stop_recording(entry["proc"])
+            except Exception:
+                log.exception("Could not stop the recorder at shutdown")
+            if entry.get("capture") is not None:
+                try:
+                    entry["capture"].stop()
+                except Exception:
+                    log.exception("Could not release the capture device at shutdown")
+
+    app = FastAPI(lifespan=lifespan)
 
     @app.get("/api/health")
     def health():
@@ -77,11 +110,18 @@ def create_app(cfg=None, runner=None, probe=None, capture=None) -> FastAPI:
                              speakers: str, job: str):
         lang_arg = lang or None
         n_spk = int(speakers) if speakers.strip().isdigit() and int(speakers) > 0 else None
-        result = await run_in_threadpool(
-            runner, src, cfg, lang_arg, diarize.lower() != "false",
-            lambda stage: _set_stage(job, stage),
-            n_spk,
-        )
+
+        def _run_one_at_a_time():
+            if not _TRANSCRIBE_SLOT.acquire(blocking=False):
+                _set_stage(job, "queued")
+                _TRANSCRIBE_SLOT.acquire()
+            try:
+                return runner(src, cfg, lang_arg, diarize.lower() != "false",
+                              lambda stage: _set_stage(job, stage), n_spk)
+            finally:
+                _TRANSCRIBE_SLOT.release()
+
+        result = await run_in_threadpool(_run_one_at_a_time)
         _set_stage(job, "writing")
         paths = write_outputs(result, cfg.output_dir, name, inbox=cfg.inbox)
         _set_stage(job, "done")
@@ -215,11 +255,22 @@ def create_app(cfg=None, runner=None, probe=None, capture=None) -> FastAPI:
         entry = recordings.pop(rec_id, None)
         if entry is None:
             return JSONResponse({"error": "unknown recording"}, status_code=404)
-        recorder.stop_recording(entry["proc"])
-        if entry.get("capture") is not None:
-            # The tap lives in this process; releasing it removes the device
-            # from every app's input list again.
-            entry["capture"].stop()
+        try:
+            recorder.stop_recording(entry["proc"])
+        except Exception as exc:
+            log.exception("Could not stop the recorder")
+            return JSONResponse({"error": str(exc)}, status_code=500)
+        finally:
+            if entry.get("capture") is not None:
+                # The tap lives in this process; releasing it removes the device
+                # from every app's input list again. It must not depend on the
+                # recorder having shut down cleanly, or a failed stop strands a
+                # device that only a restart will clear. Swallowed rather than
+                # raised: this runs on the way out, including out of an error.
+                try:
+                    entry["capture"].stop()
+                except Exception:
+                    log.exception("Could not release the capture device")
         path = entry["path"]
         if not path.exists() or path.stat().st_size == 0:
             return JSONResponse({"error": "recording produced no audio"}, status_code=500)
@@ -248,4 +299,5 @@ def create_app(cfg=None, runner=None, probe=None, capture=None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     return app
 
+setup_logging(LOG_DIR)
 app = create_app()

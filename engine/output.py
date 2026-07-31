@@ -1,8 +1,43 @@
 import json
+import logging
 import shutil
+import time
 from dataclasses import asdict
 from pathlib import Path
 from engine.types import TranscriptResult
+
+log = logging.getLogger(__name__)
+
+# Transcribing a recording a second time — a different speaker count, a language
+# picked by hand — used to overwrite the first result where it stood, so the two
+# could not be compared and nothing said the earlier one had gone. The previous
+# run moves in here instead. The canonical names still hold the newest result,
+# so anything reading transcript.md does not have to know this exists.
+ARCHIVE_DIRNAME = "previous"
+
+# Named explicitly rather than globbed: whatever else ends up in the folder, the
+# archive directory itself must never be swept into a later archive.
+_ARTEFACTS = ("transcript.md", "transcript.srt", "transcript.json", "words.json")
+
+def _archive_previous_run(dest: Path) -> Path | None:
+    """Move an earlier run's files aside. Returns where they went, or None."""
+    existing = [dest / n for n in _ARTEFACTS if (dest / n).is_file()]
+    if not existing:
+        return None
+    # Labelled by when that transcript was produced, not by now, so the folder
+    # name means something when you come back to it.
+    made = min(p.stat().st_mtime for p in existing)
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(made))
+    archive = dest / ARCHIVE_DIRNAME / stamp
+    n = 2
+    while archive.exists():        # two runs can land in the same second
+        archive = dest / ARCHIVE_DIRNAME / f"{stamp}-{n}"
+        n += 1
+    archive.mkdir(parents=True)
+    for path in existing:
+        path.rename(archive / path.name)
+    log.info("Kept the previous transcript for %s in %s", dest.name, archive)
+    return archive
 
 def fmt_timestamp(seconds: float) -> str:
     s = int(seconds)
@@ -65,6 +100,7 @@ def write_outputs(result: TranscriptResult, out_dir: Path, name: str,
                   inbox: Path | None = None) -> dict:
     dest = Path(out_dir) / name
     dest.mkdir(parents=True, exist_ok=True)
+    _archive_previous_run(dest)
     paths = {
         "md": dest / "transcript.md",
         "srt": dest / "transcript.srt",

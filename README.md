@@ -25,9 +25,15 @@ Double-click **Start Transcrb.command**. Your browser opens with two panels:
 Transcripts are saved in `out/`, one folder per recording, as Markdown, JSON and
 subtitles. Close the terminal window to stop Transcrb.
 
-Transcription is faster than real time: roughly 9 minutes of processing for a
-25-minute meeting, measured on an M1 Pro. Speech recognition runs on the CPU and
-speaker labelling on the Mac's GPU.
+Transcription is faster than real time: about 7 minutes of processing for a
+26-minute meeting when you pick the language, or roughly 9 with Auto-detect,
+measured on an M1 Pro. Speech recognition runs on the CPU and speaker labelling
+on the Mac's GPU. One transcription runs at a time; a second waits its turn,
+because running two at once is slower than running them one after the other.
+
+If something goes wrong, `logs/transcrb.log` has the details — it keeps them
+after the terminal window is closed. Transcribing the same recording again keeps
+the older transcript in `out/<name>/previous/` rather than replacing it.
 
 ## Speaker labels
 
@@ -46,6 +52,7 @@ transcript, just with everyone as `SPEAKER_00`. See step 2 of
 | `docs/` | [SETUP.md](docs/SETUP.md) — full setup, troubleshooting, how recording works |
 | `out/` | your transcripts and recordings (created on first use) |
 | `models/` | downloaded speech models (created by setup) |
+| `logs/` | what happened, kept after the window closes (created on first use) |
 
 ## Windows
 

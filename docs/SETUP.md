@@ -39,6 +39,21 @@ audio, before and after:
 | speaker labels | 244.5s | 18.4s | **13.3x** — pyannote on Metal |
 | **total** | **537.1s** | **85.7s** | **6.3x** |
 
+Those figures come from a 4-minute clip, so they were re-checked on a real
+26-minute meeting (English picked explicitly, 3 speakers) to confirm the numbers
+hold at meeting length rather than only extrapolating:
+
+| stage | 25.9 min of audio | rate |
+|---|---|---|
+| convert audio | 0.3s | — |
+| transcription | 341.8s | 4.5x realtime |
+| speaker labels | 92.0s | 16.9x realtime |
+| **total** | **~7.3 min** | **3.5x realtime** |
+
+Speaker labelling gets *cheaper* per minute as recordings grow (4.6s per
+audio-minute at 4 minutes, 3.6s at 26), so the short-clip measurement was
+conservative. Transcription is the flat cost and dominates at any length.
+
 Two things produced that, and the order is worth knowing if you tune further:
 
 1. **Speaker labelling was nearly half the runtime** and nobody had noticed,
@@ -172,6 +187,45 @@ refuses to record a silent one, shows a live level meter while recording and war
 after 10 seconds of no signal, and will not spend 40 minutes transcribing a
 recording that turned out to be silent. If the meter reads "no signal", fix it
 before the meeting rather than discovering it afterwards.
+
+## When something goes wrong
+Transcrb keeps a log at **`logs/transcrb.log`**, so a failure is still
+diagnosable after the terminal window is closed. It holds the full traceback of
+anything that failed, plus the warnings that are easy to miss in passing — most
+usefully, notice that speaker labelling could not use the GPU and fell back to
+the CPU, which is roughly four times slower and otherwise looks identical to a
+normal run. The file is capped at 2MB with three older copies kept, so it cannot
+grow without bound. The terminal still shows everything it always showed.
+
+If a transcript comes back wrong, that log and the recording under
+`out/recordings/` are the two things worth keeping.
+
+### One transcription at a time
+The server runs a single transcription at a time and a second request waits its
+turn, reporting "Waiting for the current transcription to finish…". Running two
+at once is *slower than running them in sequence* — each loads its own multi-GB
+model, holds the whole recording in memory, and competes for the same GPU — so
+queueing is the faster behaviour as well as the safer one.
+
+### Re-transcribing keeps the older result
+Running a recording again — a different speaker count, the language picked by
+hand — no longer destroys the first transcript. The earlier files move to
+`out/<name>/previous/<when-they-were-made>/`, so the two can be compared:
+
+```
+out/recording-20260730-124519/
+  transcript.md                     <- newest run, always
+  previous/20260730-134728/         <- the run made at 13:47
+  previous/20260730-143255/         <- the run made at 14:32
+```
+
+`transcript.md` and the other canonical names always hold the newest run, so
+nothing reading them needs to know this exists. Each kept run costs the size of
+its transcripts — a few hundred KB for a meeting, mostly `words.json` — so if
+you have re-run something many times, `previous/` is safe to delete.
+
+The copy in your inbox is **replaced** rather than kept, deliberately: it is a
+drop point that gets consumed, and duplicates there would be ingested twice.
 
 ## Windows (NOT yet tested)
 Run **First-time setup.bat**, install ffmpeg (`winget install Gyan.FFmpeg`), then
