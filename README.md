@@ -41,6 +41,21 @@ Naming who spoke needs a free HuggingFace token. Without one you still get a ful
 transcript, just with everyone as `SPEAKER_00`. See step 2 of
 [docs/SETUP.md](docs/SETUP.md) for the three-minute setup.
 
+## Memory, when it runs as a service
+
+Whisper and pyannote stay resident after the first transcription, so the
+service does not return to its idle footprint. Measured on this machine
+(`ps -o rss=` against the launchd pid, `large-v3-turbo`, `compute_type = int8`):
+
+- idle, before any transcription: about 230 MB
+- peak, during a diarized run: about 2.4 GB
+- settled, minutes after a run: about 600 MB
+
+The peak is the number that matters on a Mac also running Claude Code
+sessions, and it is transient. This is recorded rather than solved: unloading
+the models between runs would trade a few hundred megabytes for a cold start
+on every recording.
+
 ## What's in here
 
 | | |

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Keeps the Transcrb API running across logins and restarts, so wrktbl-live
+     can reach it over loopback whenever a recording is uploaded.
+     Install:   ./install-service.sh
+     Status:    ./install-service.sh --status
+     Remove:    ./install-service.sh --uninstall
+     Nothing sensitive is in this file; config/config.toml holds the tokens. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.aliyoop.transcrb</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/aladdin/PROJECTS/Transcrb/run.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/aladdin/PROJECTS/Transcrb</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/aladdin/.cache/transcrb/service.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/aladdin/.cache/transcrb/service.log</string>
+</dict>
+</plist>
