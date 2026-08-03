@@ -43,18 +43,22 @@ transcript, just with everyone as `SPEAKER_00`. See step 2 of
 
 ## Memory, when it runs as a service
 
-Whisper and pyannote stay resident after the first transcription, so the
-service does not return to its idle footprint. Measured on this machine
-(`ps -o rss=` against the launchd pid, `large-v3-turbo`, `compute_type = int8`):
+The models do not stay resident. The service climbs during a run and then
+falls back below where it started, so nothing has to be unloaded by hand.
+Measured on this machine by sampling `ps -o rss=` against the service pid
+across a real diarized run (`large-v3-turbo`, `compute_type = int8`):
 
 - idle, before any transcription: about 230 MB
-- peak, during a diarized run: about 2.4 GB
-- settled, minutes after a run: about 600 MB
+- peak, during the run: about 1.4 GB seen by sampling
+- one minute after: about 620 MB
+- five minutes after: about 140 MB
+- settled: 20 to 80 MB, well below the cold idle figure and still drifting
+  down as macOS reclaims
 
-The peak is the number that matters on a Mac also running Claude Code
-sessions, and it is transient. This is recorded rather than solved: unloading
-the models between runs would trade a few hundred megabytes for a cold start
-on every recording.
+Sampling can miss a short spike, so budget for the higher 2.4 GB peak an
+earlier note recorded rather than for the 1.4 GB seen here. The peak is the
+number that matters on a Mac also running Claude Code sessions, and it is
+transient: the settled figure is what the service costs between recordings.
 
 ## What's in here
 
