@@ -31,6 +31,16 @@ command -v ffmpeg >/dev/null 2>&1 || {
   exit 1
 }
 
+# Recording falls back to ffmpeg without the native recorder, and ffmpeg's
+# capture loses audio on a busy machine — that is what turned two meetings into
+# a page of "Thank you." on repeat. Rebuilt here rather than only at setup so a
+# `git pull` that changes capture.swift takes effect on the next service start.
+# A no-op when the binary is already current, and never fatal: ffmpeg still
+# records, just worse, and a Mac without the Command Line Tools should still
+# start.
+bash scripts/build-native.sh || \
+  echo "WARNING: recording will use ffmpeg and may lose audio on a busy machine." >&2
+
 # Loopback only, and it must stay that way: recordings and transcripts of
 # private meetings are served over this port with no authentication at all.
 exec .venv/bin/python -m uvicorn web.server:app --host 127.0.0.1 --port 8756

@@ -50,6 +50,14 @@ mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
 sed "s#/Users/aladdin/PROJECTS/Transcrb#$REPO#g" "$REPO/com.aliyoop.transcrb.plist" > "$PLIST"
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+# bootout returns before the job is actually gone, and bootstrapping over a job
+# that is still unloading fails with "Bootstrap failed: 5: Input/output error" —
+# which leaves NO service running at all, because the old one did go away. Hit
+# twice while fixing the capture throttle on 2026-08-05. Wait for it.
+for _ in $(seq 50); do
+  launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || break
+  sleep 0.2
+done
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 
 echo "Installed $LABEL on http://127.0.0.1:8756"

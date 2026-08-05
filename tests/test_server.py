@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from fastapi.testclient import TestClient
 from engine.types import TranscriptResult, Segment
@@ -161,7 +162,23 @@ def test_stop_accepts_a_recording_with_audio_in_it(tmp_path, monkeypatch):
                          data={"device": ":2", "name": "MacBook Pro Microphone"}).json()["rec_id"]
     body = client.post("/api/record/stop", data={"rec_id": rec_id}).json()
     assert body["silent"] is False
+    assert body["dropped"] < 0.01
     assert "hint" not in body
+
+def test_stop_warns_when_most_of_the_recording_was_dropped(tmp_path, monkeypatch):
+    # The failure that cost two meetings: loud audio, so every silence guard
+    # passes, but most of the buffers never reached ffmpeg. Only the proportion
+    # of filled-in silence tells the difference.
+    t = np.linspace(0, 2, 32000, endpoint=False)
+    speech = 0.5 * np.sin(2 * np.pi * 440 * t)
+    _fake_recorder(monkeypatch, np.concatenate([speech, np.zeros(16000 * 12)]))
+    client = _client_with_probe(tmp_path, -30.0)
+    rec_id = client.post("/api/record/start",
+                         data={"device": ":2", "name": "MacBook Pro Microphone"}).json()["rec_id"]
+    body = client.post("/api/record/stop", data={"rec_id": rec_id}).json()
+    assert body["silent"] is False          # loud enough to pass the old guards
+    assert body["dropped"] > 0.35
+    assert "ProcessType" in body["hint"]    # the fix, not just "something is wrong"
 
 def test_level_reports_no_signal_while_recording(tmp_path, monkeypatch):
     _fake_recorder(monkeypatch, np.zeros(16000 * 3))
@@ -176,6 +193,156 @@ def test_level_for_unknown_recording_is_404(tmp_path):
     r = _client_with_probe(tmp_path, -30.0).get("/api/record/level",
                                                 params={"rec_id": "nope"})
     assert r.status_code == 404
+
+
+# ---- the native recorder, and losing audio in the open -----------------------
+# Two meetings were lost because nothing said anything until the transcript came
+# back as one phrase on repeat. The native recorder counts what CoreAudio never
+# handed it and publishes that once a second, so a recording in trouble is
+# visible while the meeting is still running.
+
+def _native_recorder(monkeypatch, samples, *, stats=None, progress=None):
+    """Stand in for native/transcrb-capture, summary and all."""
+    class _Proc:
+        args = [str(S.recorder.NATIVE_RECORDER), "--device-index", "2"]
+    def _start(device, out, platform):
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        sf.write(str(out), np.asarray(samples, dtype="float32"), 16000, subtype="PCM_16")
+        if progress is not None:
+            S.recorder.progress_path(Path(out)).write_text(json.dumps(progress))
+        return _Proc()
+    monkeypatch.setattr(S.recorder, "start_recording", _start)
+    monkeypatch.setattr(S.recorder, "stop_recording", lambda proc: stats or {})
+
+def test_start_reports_which_recorder_got_the_meeting(tmp_path, monkeypatch):
+    # ffmpeg loses audio on a busy machine and the native recorder does not, so
+    # which one ran is the single most useful fact about a recording.
+    _native_recorder(monkeypatch, np.zeros(16000))
+    client = _client_with_probe(tmp_path, -30.0)
+    body = client.post("/api/record/start", data={"device": ":2", "name": "Mic"}).json()
+    assert body["recorder"] == "native"
+
+def test_the_recorders_own_count_beats_measuring_silence(tmp_path, monkeypatch):
+    # A meeting with long genuine pauses reads as full of gaps to the silence
+    # measure. The native recorder knows it lost nothing, and it is right.
+    _native_recorder(monkeypatch, np.zeros(16000 * 10), stats={"dropped": 0.0})
+    client = _client_with_probe(tmp_path, -30.0)
+    rec_id = client.post("/api/record/start",
+                         data={"device": ":2", "name": "Mic"}).json()["rec_id"]
+    body = client.post("/api/record/stop", data={"rec_id": rec_id}).json()
+    assert body["dropped"] == 0.0
+    assert "hint" not in body or "ProcessType" not in body["hint"]
+
+def test_a_native_recording_that_lost_audio_is_not_blamed_on_the_throttle(tmp_path,
+                                                                          monkeypatch):
+    t = np.linspace(0, 2, 32000, endpoint=False)
+    _native_recorder(monkeypatch, 0.5 * np.sin(2 * np.pi * 440 * t),
+                     stats={"dropped": 0.61, "captured_seconds": 120.0})
+    client = _client_with_probe(tmp_path, -30.0)
+    rec_id = client.post("/api/record/start",
+                         data={"device": ":2", "name": "Mic"}).json()["rec_id"]
+    body = client.post("/api/record/stop", data={"rec_id": rec_id}).json()
+    assert body["dropped"] == 0.61
+    assert body["captured_seconds"] == 120.0
+    assert "ProcessType" not in body["hint"]     # the native path is immune to it
+
+def test_level_warns_about_lost_audio_while_the_meeting_is_still_running(tmp_path,
+                                                                         monkeypatch):
+    t = np.linspace(0, 2, 32000, endpoint=False)
+    _native_recorder(monkeypatch, 0.5 * np.sin(2 * np.pi * 440 * t),
+                     progress={"captured_seconds": 300.0, "dropped": 0.55,
+                               "reason": "recording"})
+    client = _client_with_probe(tmp_path, -30.0)
+    rec_id = client.post("/api/record/start",
+                         data={"device": ":2", "name": "Mic"}).json()["rec_id"]
+    body = client.get("/api/record/level", params={"rec_id": rec_id}).json()
+    assert body["silent"] is False
+    assert body["dropped"] == 0.55
+    assert body["captured_seconds"] == 300.0
+    assert body["hint"]                          # said now, not an hour from now
+
+def test_level_says_when_the_input_has_stopped_rather_than_slowed(tmp_path,
+                                                                  monkeypatch):
+    # A device that stops delivering is a different problem from one losing
+    # buffers, and the thing to do about it is different. Without this the
+    # counters simply freeze and the recording reads as healthy but short.
+    t = np.linspace(0, 2, 32000, endpoint=False)
+    _native_recorder(monkeypatch, 0.5 * np.sin(2 * np.pi * 440 * t),
+                     progress={"captured_seconds": 300.0, "dropped": 0.12,
+                               "stalled": True, "stall_seconds": 41.0,
+                               "reason": "recording"})
+    client = _client_with_probe(tmp_path, -30.0)
+    rec_id = client.post("/api/record/start",
+                         data={"device": ":2", "name": "AirPods"}).json()["rec_id"]
+    body = client.get("/api/record/level", params={"rec_id": rec_id}).json()
+    assert body["stalled"] is True
+    assert "41 seconds" in body["hint"]
+    assert "AirPods" in body["hint"]
+    assert "ProcessType" not in body["hint"]   # not the throttle, a dead device
+
+def test_level_says_nothing_about_loss_when_the_recording_is_healthy(tmp_path,
+                                                                     monkeypatch):
+    t = np.linspace(0, 2, 32000, endpoint=False)
+    _native_recorder(monkeypatch, 0.5 * np.sin(2 * np.pi * 440 * t),
+                     progress={"captured_seconds": 300.0, "dropped": 0.0,
+                               "reason": "recording"})
+    client = _client_with_probe(tmp_path, -30.0)
+    rec_id = client.post("/api/record/start",
+                         data={"device": ":2", "name": "Mic"}).json()["rec_id"]
+    body = client.get("/api/record/level", params={"rec_id": rec_id}).json()
+    assert body["dropped"] == 0.0
+    assert "hint" not in body
+
+def test_unfinished_recordings_are_offered_rather_than_left_on_disk(tmp_path):
+    client = _client_with_probe(tmp_path, -30.0)
+    recordings = tmp_path / "out" / "recordings"
+    recordings.mkdir(parents=True)
+    t = np.linspace(0, 2, 32000, endpoint=False)
+    sf.write(str(recordings / "recording-20260803-120243.wav"),
+             (0.5 * np.sin(2 * np.pi * 440 * t)).astype("float32"), 16000,
+             subtype="PCM_16")
+    body = client.get("/api/recordings/unfinished").json()
+    assert [r["name"] for r in body["recordings"]] == ["recording-20260803-120243"]
+
+def test_a_transcribed_recording_stops_being_offered(tmp_path):
+    client = _client_with_probe(tmp_path, -30.0)
+    recordings = tmp_path / "out" / "recordings"
+    recordings.mkdir(parents=True)
+    sf.write(str(recordings / "recording-20260803-120243.wav"),
+             np.zeros(16000, dtype="float32"), 16000, subtype="PCM_16")
+    done = tmp_path / "out" / "recording-20260803-120243"
+    done.mkdir(parents=True)
+    (done / "transcript.md").write_text("# Transcript")
+    assert client.get("/api/recordings/unfinished").json()["recordings"] == []
+
+def test_listing_repairs_a_recording_the_recorder_never_closed(tmp_path):
+    # The service was reinstalled mid-meeting on 3 Aug. ffmpeg never wrote the
+    # sizes, so libsndfile reads the file as empty even though the audio is all
+    # there. Listing it is the moment to make it a real file again.
+    import struct
+    client = _client_with_probe(tmp_path, -30.0)
+    recordings = tmp_path / "out" / "recordings"
+    recordings.mkdir(parents=True)
+    pcm = (np.asarray(np.sin(np.linspace(0, 200, 32000)) * 16000,
+                      dtype="<i2")).tobytes()
+    fmt = struct.pack("<HHIIHH", 1, 1, 16000, 32000, 2, 16)
+    body = (b"fmt " + struct.pack("<I", len(fmt)) + fmt
+            + b"data" + struct.pack("<I", 0) + pcm)
+    cut = recordings / "recording-cut.wav"
+    cut.write_bytes(b"RIFF" + struct.pack("<I", 0) + b"WAVE" + body)
+    assert sf.info(str(cut)).frames == 0
+    client.get("/api/recordings/unfinished")
+    assert sf.info(str(cut)).frames == 32000
+
+def test_stop_clears_the_progress_file_it_left_beside_the_recording(tmp_path,
+                                                                    monkeypatch):
+    _native_recorder(monkeypatch, np.zeros(16000),
+                     progress={"dropped": 0.0, "reason": "recording"})
+    client = _client_with_probe(tmp_path, -30.0)
+    start = client.post("/api/record/start", data={"device": ":2", "name": "Mic"}).json()
+    assert S.recorder.progress_path(Path(start["path"])).exists()
+    client.post("/api/record/stop", data={"rec_id": start["rec_id"]})
+    assert not S.recorder.progress_path(Path(start["path"])).exists()
 
 
 # ---- automatic system-audio capture ------------------------------------------

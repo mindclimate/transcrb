@@ -10,5 +10,7 @@ config/config.toml
 *.mp3
 *.mp4
 *.egg-info/
+native/transcrb-capture
+native/transcrb-capture.new
 .pytest_cache/
 .DS_Store

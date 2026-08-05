@@ -35,6 +35,56 @@ If something goes wrong, `logs/transcrb.log` has the details — it keeps them
 after the terminal window is closed. Transcribing the same recording again keeps
 the older transcript in `out/<name>/previous/` rather than replacing it.
 
+## How recording holds up
+
+Two meetings were lost in early August to a recorder that dropped most of its
+audio without saying so. The file was loud, the right size, and full of speech;
+it was just the surviving fragments of the meeting packed end to end, so an hour
+played back as eight fast minutes and Whisper returned "Thank you." on a loop.
+
+The cause was ffmpeg. Its macOS audio input holds exactly one pending buffer and
+blocks the capture callback until that buffer is read, which gives the whole
+capture about 10ms of tolerance. CoreAudio runs in real time and cannot wait, so
+on a busy machine it discards what it produced during the stall, silently.
+
+Recording now goes through `native/capture.swift` instead, built to
+`native/transcrb-capture` during setup. It keeps 30 seconds of ring buffer and
+writes from its own thread, so nothing on the audio path ever waits for the
+disk, and it counts what it loses rather than leaving it to be guessed at.
+Measured on this machine under `taskpolicy -b`, the background throttle that
+caused the original failure:
+
+| | 30s capture, same mic, same moment |
+|---|---|
+| ffmpeg | 88.7% of the audio lost |
+| native recorder | 0.1% lost |
+
+ffmpeg is still the fallback if the native recorder has not been built, and the
+Record panel says so before the meeting starts rather than after. To build it by
+hand: `bash scripts/build-native.sh` (needs the Xcode Command Line Tools,
+`xcode-select --install`). `run.sh` rebuilds it on every service start when the
+source has changed.
+
+Three things now make loss visible instead of silent:
+
+- the timer reads `● recording 12:34 · 100% captured`, updated every second from
+  the recorder's own frame count, so a recording in trouble shows it while the
+  meeting can still be saved
+- stopping reports the same figure and refuses to transcribe a recording that
+  lost most of itself, offering "Transcribe anyway" instead of quietly
+  producing a page of nonsense
+- recordings that were never finished, because the app was closed or the
+  machine restarted mid-meeting, are listed in the Record panel with a
+  Transcribe button. Their headers are repaired on the way past, so they open
+  properly in QuickTime too
+
+The launchd agent still sets `ProcessType` to `Interactive`. It matters less now
+that the recorder tolerates 30 seconds rather than 10 milliseconds, but the
+throttle applies to everything the service does, so if recordings start behaving
+oddly, check the key survived in
+`~/Library/LaunchAgents/com.aliyoop.transcrb.plist` and reinstall with
+`./install-service.sh`.
+
 ## Speaker labels
 
 Naming who spoke needs a free HuggingFace token. Without one you still get a full
@@ -66,6 +116,7 @@ transient: the settled figure is what the service costs between recordings.
 |---|---|
 | `config/` | your settings — `config.toml` (yours, private) and an example to copy |
 | `engine/` | the transcription pipeline |
+| `native/` | `capture.swift`, the recorder; the binary is built by setup |
 | `web/` | the local web interface |
 | `scripts/` | setup script called by the installer |
 | `docs/` | [SETUP.md](docs/SETUP.md) — full setup, troubleshooting, how recording works |

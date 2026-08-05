@@ -136,7 +136,32 @@ saved under `out/recordings/` and transcribed automatically when you stop.
 Terminal — for permission the first time. If recordings come out near-silent or
 much shorter than expected, enable it under
 System Settings → Privacy & Security → Microphone, then restart Transcrb.
-Allow a second or two of lead-in: ffmpeg takes a moment to open the device.
+Allow a second or two of lead-in: opening the device takes a moment.
+
+### What does the recording
+`native/transcrb-capture`, built from `native/capture.swift` by
+`scripts/build-native.sh` during setup. It exists because ffmpeg's macOS audio
+input cannot be made reliable: it holds one pending buffer and blocks the
+capture callback until that buffer is read, giving the capture about 10ms of
+tolerance before CoreAudio starts discarding a meeting, with no error and no gap
+in the file. That cost two recorded meetings in August 2026, which came back as
+"Thank you." and "I don't know." on a loop.
+
+The native recorder keeps 30 seconds of ring buffer, writes from a separate
+thread, and counts the frames CoreAudio never handed it. Measured under
+`taskpolicy -b`, the same throttle that caused the original failure: ffmpeg lost
+88.7% of a 30-second capture, the native recorder lost 0.1%.
+
+ffmpeg still records if the binary has not been built, and the Record panel says
+so at the start of the meeting rather than at the end. Build it with
+`bash scripts/build-native.sh`; it needs the Xcode Command Line Tools
+(`xcode-select --install`). `run.sh` rebuilds it on service start whenever
+`capture.swift` has changed.
+
+The level check before recording goes through whichever recorder is going to do
+the meeting, on purpose. Probing with one binary and recording with another
+would let a microphone permission granted to the first and refused to the second
+pass the check and then record an hour of silence.
 
 ## System audio (both sides of a call)
 Pick **"Call audio + my mic (automatic)"** in the Record panel. That is the whole
@@ -181,12 +206,28 @@ the call plays to your headphones records digital silence: a full-size file, no
 error, and a transcript that is the word "you" once every 30 seconds, which is what
 Whisper emits for silence.
 
-### The silence guards
+### The guards
 Whichever path you use, the Record panel probes the input before it starts and
 refuses to record a silent one, shows a live level meter while recording and warns
 after 10 seconds of no signal, and will not spend 40 minutes transcribing a
 recording that turned out to be silent. If the meter reads "no signal", fix it
 before the meeting rather than discovering it afterwards.
+
+A loud recording is not a complete one, so completeness is watched separately.
+The timer reads `● recording 12:34 · 100% captured`, updated every second from
+the recorder's own frame count, and drops below 100% the moment audio is being
+lost. Stopping reports the same figure. Below 65% it refuses to transcribe and
+offers "Transcribe anyway" instead, because a recording missing most of itself
+produces a page of one repeated phrase and hides the real problem.
+
+### Recordings the app never finished
+Closing the window, a restart, or reinstalling the service mid-meeting all end a
+recording without anyone stopping it. The audio survives, because the recorder
+writes to disk as it goes, but nothing pointed at it: one 93MB recording sat
+unnoticed in `out/recordings/` for two days. Those are now listed in the Record
+panel with a Transcribe button, and their wav headers are repaired as they are
+listed. Until that repair they claim to hold zero samples, so QuickTime, Finder
+and libsndfile all read an hour of meeting as an empty file.
 
 ## When something goes wrong
 Transcrb keeps a log at **`logs/transcrb.log`**, so a failure is still

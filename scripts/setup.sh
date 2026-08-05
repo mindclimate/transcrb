@@ -74,6 +74,15 @@ fi
 if [ "$(uname)" = "Darwin" ]; then
   .venv/bin/python -m engine.macos_audio || \
     echo "! Audio setup did not complete — see docs/SETUP.md for the manual steps."
+
+  # 6. The native recorder. Without it recording falls back to ffmpeg, whose
+  #    avfoundation input holds one pending audio buffer and blocks the capture
+  #    callback until it is read — about 10ms of tolerance for the whole
+  #    capture. Measured under the macOS background throttle, ffmpeg lost 88.7%
+  #    of a 30-second capture and the native recorder lost 0.1%.
+  echo "Building the native recorder..."
+  bash scripts/build-native.sh || \
+    echo "! Recording will use ffmpeg and may lose audio on a busy Mac."
 fi
 
 echo "== Setup complete. Double-click 'Start Transcrb' to run. =="

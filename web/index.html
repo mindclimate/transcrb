@@ -79,6 +79,7 @@
         starts and while it runs. Recordings transcribe automatically when you stop.
       </div>
       <div id="recWarn"></div>
+      <div id="recOrphans" style="font-size:12px;margin-top:8px"></div>
     </div>
     <div class="panel">
       <h2>Result</h2>
@@ -160,6 +161,8 @@
       } finally {
         clearInterval(tick);
         $("#go").disabled = false;
+        // A recording that now has a transcript is no longer unfinished.
+        showUnfinished();
       }
     }
 
@@ -207,7 +210,33 @@
         $("#device").innerHTML = '<option value="">unavailable</option>';
         $("#recStart").disabled = true;
       }
+      await showUnfinished();
     })();
+
+    // A recording ended by a crash, a restart or a closed terminal is on disk
+    // and pointed at by nothing, which is how a 93MB one sat unnoticed for two
+    // days. Shown here rather than on a screen of its own.
+    async function showUnfinished() {
+      const box = $("#recOrphans");
+      try {
+        const { recordings } = await (await fetch("/api/recordings/unfinished")).json();
+        if (!recordings.length) { box.innerHTML = ""; return; }
+        box.innerHTML =
+          `<b>${recordings.length} recording${recordings.length > 1 ? "s" : ""} ` +
+          `not yet transcribed</b>` +
+          recordings.map((r, i) =>
+            `<div style="margin-top:4px">${r.name} · ${Math.floor(r.seconds / 60)}m ` +
+            `${Math.round(r.seconds % 60)}s <button data-orphan="${i}">Transcribe</button></div>`
+          ).join("");
+        box.querySelectorAll("[data-orphan]").forEach(b => {
+          b.onclick = () => {
+            const fd = new FormData();
+            fd.append("server_path", recordings[b.dataset.orphan].path);
+            runTranscription(fd);
+          };
+        });
+      } catch (e) { box.innerHTML = ""; }
+    }
 
     async function checkInput() {
       const fd = new FormData();
@@ -233,25 +262,45 @@
       if (!r.ok) { $("#status").textContent = "Error: " + (j.error || "could not start"); return; }
       recId = j.rec_id;
       clearWarn();
+      // ffmpeg's capture tolerates about 10ms of delay and quietly loses a
+      // meeting on a busy Mac; the native recorder holds thirty seconds. Which
+      // one got this meeting is worth knowing before the meeting, not after.
+      if (j.recorder && j.recorder !== "native") {
+        warn("Recording with ffmpeg, not the native recorder. It loses audio " +
+             "when the machine is busy. Run <code>bash scripts/build-native.sh</code> " +
+             "and restart Transcrb to fix this.");
+      }
       $("#recStart").disabled = true; $("#recStop").disabled = false;
       const t0 = Date.now();
       deadSince = null;
+      let captured = "";
       recTimer = setInterval(() => {
         const s = Math.floor((Date.now() - t0) / 1000);
         $("#recTimer").textContent =
-          `● recording ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+          `● recording ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}${captured}`;
       }, 500);
       // Output routing can change mid-call — plugging in headphones is enough to
-      // switch away from the Multi-Output Device and kill the feed.
+      // switch away from the Multi-Output Device and kill the feed. Completeness
+      // is watched here too: a meeting losing audio has to be visible while it
+      // can still be rescued, not discovered in the transcript afterwards.
       levelTimer = setInterval(async () => {
         try {
           const l = await (await fetch("/api/record/level?rec_id=" + recId)).json();
           showMeter(l.peak_dbfs, l.silent);
+          captured = l.dropped === undefined ? ""
+            : ` · ${Math.round((1 - l.dropped) * 100)}% captured`;
           if (l.silent) {
             deadSince = deadSince ?? Date.now();
             const secs = Math.round((Date.now() - deadSince) / 1000);
             if (secs >= 10) warn(`No audio for ${secs}s — nothing is reaching ` +
               `${deviceName() || "the input"}. Fix the routing now; this recording is silent so far.`);
+          } else if (l.stalled) {
+            deadSince = null;
+            warn(l.hint);
+          } else if (l.hint) {
+            deadSince = null;
+            warn(`This recording is losing audio right now — ` +
+                 `${Math.round(l.dropped * 100)}% of it is missing so far.<br>${l.hint}`);
           } else { deadSince = null; clearWarn(); }
         } catch (e) { /* metering is best-effort */ }
       }, 1000);
@@ -289,6 +338,21 @@
         warn(`This recording is silent from start to finish — not transcribing it.<br>${j.hint}` +
              `<br><br>The file is kept at <code>${j.path}</code>.`);
         $("#status").textContent = "Recording was silent — nothing to transcribe.";
+        return;
+      }
+      if (j.hint) {
+        // Loud but mostly missing: the capture layer dropped it. Transcribing
+        // anyway returns a page of "Thank you." and hides the real problem, so
+        // this asks rather than deciding — some of the meeting is still there.
+        warn(`${j.hint}<br><br>The file is kept at <code>${j.path}</code>.` +
+             '<div><button id="txAnyway">Transcribe anyway</button></div>');
+        $("#status").textContent = "Most of this recording was dropped.";
+        $("#txAnyway").onclick = () => {
+          clearWarn();
+          const t = new FormData();
+          t.append("server_path", j.path);
+          runTranscription(t);
+        };
         return;
       }
       clearWarn();

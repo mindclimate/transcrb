@@ -25,6 +25,29 @@
   <key>KeepAlive</key>
   <true/>
 
+  <!-- THIS KEY IS LOAD-BEARING. launchd.plist(5): "If left unspecified, the
+       system will apply light resource limits to the job, throttling its CPU
+       usage and I/O bandwidth." That throttle is inherited by every child, and
+       the child here is ffmpeg capturing live audio. ffmpeg's avfoundation
+       input holds exactly one pending audio buffer and blocks the capture
+       callback until it is read (libavdevice/avfoundation.m). CoreAudio runs
+       in real time and cannot wait, so whatever it produces while that
+       callback is blocked is discarded before ffmpeg ever sees it: roughly one
+       buffer period, about 10ms, of tolerance. No error, no gap in the file —
+       the surviving samples are simply written back to back, so an hour of
+       meeting lands as eight minutes of speech at five times speed, and the
+       transcript comes back as "Thank you." on loop.
+       Measured on this machine, 2026-08-05: 63s of recording produced 16.8s of
+       audio without this key (27% of real time) against 87% from a shell.
+       Recording has since moved off ffmpeg to native/transcrb-capture, which
+       holds thirty seconds of ring buffer and measured 0.1% loss under
+       `taskpolicy -b` against ffmpeg's 88.7%. This key stays anyway: the
+       throttle applies to everything the service does, ffmpeg is still the
+       fallback when the native recorder has not been built, and thirty seconds
+       of tolerance is not infinite. -->
+  <key>ProcessType</key>
+  <string>Interactive</string>
+
   <key>StandardOutPath</key>
   <string>/Users/aladdin/.cache/transcrb/service.log</string>
   <key>StandardErrorPath</key>

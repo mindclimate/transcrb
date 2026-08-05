@@ -17,6 +17,14 @@ ALLOWED_ROOT_FILES = {
     "Start Transcrb.command",
     "Start Transcrb.bat",
     "pyproject.toml",
+    # Installing the background service is a thing someone does deliberately,
+    # from the folder they unzipped, and the plist sits beside it because
+    # install-service.sh copies it into ~/Library/LaunchAgents.
+    "install-service.sh",
+    "com.aliyoop.transcrb.plist",
+    # The plist names run.sh by absolute path, so it cannot move without every
+    # installed service breaking.
+    "run.sh",
 }
 
 def _visible_root_files() -> set[str]:
