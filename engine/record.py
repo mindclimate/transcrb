@@ -74,13 +74,69 @@ def parse_device_listing(stderr: str, platform: str) -> list[dict]:
                 devices.append({"id": f"audio={m.group(1)}", "name": m.group(1)})
     return devices
 
+def parse_native_listing(raw: str) -> list[dict]:
+    """Devices from `transcrb-capture --list-devices`, addressed by UID.
+
+    A UID names one device for as long as it exists. A list position names
+    whatever happens to sit there, which is why this replaced the index.
+    """
+    try:
+        found = json.loads(raw)
+    except ValueError:
+        return []
+    return [{"id": d["uid"], "uid": d["uid"], "name": d.get("name", ""),
+             "inputs": d.get("inputs", 0)}
+            for d in found if isinstance(d, dict) and d.get("uid")]
+
 def list_input_devices(platform: str) -> list[dict]:
+    """The audio inputs, addressed the same way the recorder resolves them.
+
+    Asked of the recording binary itself rather than of ffmpeg. The two walk
+    different macOS APIs which order the devices differently — ffmpeg uses a
+    discovery session, the recorder used the deprecated AVCaptureDevice list —
+    so a position meant a different device to each. On 2026-08-20 that recorded
+    a Continuity iPhone microphone instead of the system-audio tap: the device
+    exists, opens, and hands out digital silence, so a three-hour meeting was
+    lost with every guard reporting healthy. Nothing addresses a device by
+    position any more.
+    """
+    binary = native_recorder(platform)
+    if binary is not None:
+        proc = subprocess.run([str(binary), "--list-devices"],
+                              capture_output=True, text=True, timeout=30)
+        found = parse_native_listing(proc.stdout)
+        if found:
+            return found
     fmt = "avfoundation" if platform == "darwin" else "dshow"
     proc = subprocess.run(
         ["ffmpeg", "-hide_banner", "-f", fmt, "-list_devices", "true", "-i", ""],
         capture_output=True, text=True,
     )
     return parse_device_listing(proc.stderr, platform)
+
+def ffmpeg_index_for(uid: str, platform: str) -> str:
+    """The ':N' ffmpeg knows a UID by, for the fallback recorder.
+
+    ffmpeg cannot be told a UID, so its own listing has to be matched by name.
+    Raises rather than guessing: recording the wrong device is the failure this
+    whole path exists to prevent, and it is silent when it happens.
+    """
+    name = next((d["name"] for d in list_input_devices(platform)
+                 if d.get("uid") == uid), None)
+    if not name:
+        raise RuntimeError(f"no audio input with UID {uid}")
+    fmt = "avfoundation" if platform == "darwin" else "dshow"
+    proc = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-f", fmt, "-list_devices", "true", "-i", ""],
+        capture_output=True, text=True,
+    )
+    matches = [d for d in parse_device_listing(proc.stderr, platform)
+               if d["name"].strip() == name.strip()]
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"ffmpeg lists {len(matches)} inputs named {name!r}; refusing to "
+            "guess which one is the meeting")
+    return matches[0]["id"]
 
 # ---- the native recorder -----------------------------------------------------
 # ffmpeg is the fallback, not the plan. Its avfoundation input holds one pending
@@ -109,17 +165,31 @@ def native_recorder(platform: str, binary: Path = NATIVE_RECORDER) -> Path | Non
 def progress_path(out: Path) -> Path:
     return Path(out).with_suffix(".progress.json")
 
+# The name a recording is given becomes its filename, and its filename becomes
+# the transcript's folder, so it has to survive being both. Kept to characters
+# that mean the same thing everywhere rather than escaped cleverly: a meeting
+# named with a slash is not worth a directory traversal.
+_SLUG_LIMIT = 60
+
+def slugify(title: str) -> str:
+    """A filename-safe stem for a recording the user named. '' if unusable."""
+    cleaned = re.sub(r"[^\w\s-]", "", (title or ""), flags=re.UNICODE).strip()
+    cleaned = re.sub(r"[\s_-]+", "-", cleaned).strip("-")
+    return cleaned[:_SLUG_LIMIT].strip("-")
+
 def build_native_command(device: str, out: Path, binary: Path,
                          progress: Path | None = None) -> list[str]:
-    """Record `device` — an avfoundation ':N' — with the native recorder.
+    """Record `device` with the native recorder.
 
-    The index is resolved by the recorder through the same AVCaptureDevice list
-    ffmpeg walks, so ':2' means the same input to both. Resolving it against
-    CoreAudio's device list instead would be a different list in a different
-    order, and would silently record the wrong device.
+    `device` is a CoreAudio UID. A ':N' is still accepted so an ffmpeg-only
+    listing keeps working, but nothing in this project produces one any more:
+    the index meant a different device to the server and to the recorder, and
+    the mismatch recorded silence through a whole meeting without one error.
     """
-    cmd = [str(binary), "--device-index", str(device).lstrip(":"),
-           "--out", str(out)]
+    device = str(device)
+    selector = (["--device-index", device.lstrip(":")] if device.startswith(":")
+                else ["--device-uid", device])
+    cmd = [str(binary), *selector, "--out", str(out)]
     if progress is not None:
         cmd += ["--progress", str(progress)]
     return cmd
@@ -151,20 +221,29 @@ def read_progress(out: Path) -> dict:
         return {}
 
 def reported_dropped(stats: dict, wav: Path) -> float:
-    """How much of the meeting never reached the file, 0 to 1.
+    """How much of the meeting is missing from the file, 0 to 1.
 
-    The native recorder counts the frames CoreAudio never handed it, which is
-    the true number. ffmpeg cannot, so a recording it made is measured by how
-    much of the file is filled-in silence — a good proxy that also counts a
-    genuinely silent room. Prefer the count that cannot be confused.
+    Two measures, and the answer is the worse of them, because each is blind to
+    what the other sees. The recorder counts the frames CoreAudio never handed
+    it; it cannot tell that the frames it did receive were digital silence. The
+    file measures filled-in silence; it cannot tell that time never arrived at
+    all. Trusting the recorder alone is what let a device that delivers nothing
+    but zeros report a healthy 40% loss through a three-hour meeting.
     """
+    measured = dropped_fraction(wav)
     if isinstance(stats, dict) and "dropped" in stats:
         try:
-            return max(0.0, min(1.0, float(stats["dropped"])))
+            reported = max(0.0, min(1.0, float(stats["dropped"])))
         except (TypeError, ValueError):
             log.warning("The recorder reported an unusable loss figure: %r",
                         stats.get("dropped"))
-    return dropped_fraction(wav)
+            return measured
+        # Its count stands — genuine pauses would otherwise read as loss — right
+        # up to the point where the file is almost nothing but silence. No
+        # meeting is, so past that line the recorder is not reporting a quiet
+        # room, it is reporting a device that handed it zeros all afternoon.
+        return measured if measured >= MOSTLY_SILENT_FRACTION else reported
+    return measured
 
 def start_recording(device: str, out: Path, platform: str) -> subprocess.Popen:
     out = Path(out)
@@ -180,9 +259,16 @@ def start_recording(device: str, out: Path, platform: str) -> subprocess.Popen:
         log.warning("The native recorder would not start (%s); falling back to "
                     "ffmpeg, which loses audio on a busy machine",
                     why.decode("utf-8", "replace").strip() or "no reason given")
-    cmd = build_record_command(device, out, platform)
+    cmd = build_record_command(_ffmpeg_device(device, platform), out, platform)
     return subprocess.Popen(cmd, stdin=subprocess.PIPE,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def _ffmpeg_device(device: str, platform: str) -> str:
+    """Whatever ffmpeg needs to open `device`, which it cannot address by UID."""
+    device = str(device)
+    if device.startswith(":") or device.startswith("audio="):
+        return device
+    return ffmpeg_index_for(device, platform)
 
 def recorder_name(proc) -> str:
     """Which recorder is running: 'native' or 'ffmpeg'. Their advice differs.
@@ -277,6 +363,21 @@ def peak_dbfs(wav: Path, tail_seconds: float | None = None,
 
 def is_silent(dbfs: float) -> bool:
     return dbfs < SILENCE_DBFS
+
+# A peak answers "was anything ever loud", which is not the question. A dead
+# input still emits click artifacts at buffer boundaries, and one click puts the
+# peak at -5 dBFS across an hour of zeros — which is exactly how a recording
+# that was 99.5% digital silence passed every level check ever made of it. The
+# proportion of the file that is digital silence cannot be fooled by one sample.
+MOSTLY_SILENT_FRACTION = 0.98
+
+def is_mostly_silence(wav: Path, tail_seconds: float | None = None) -> bool:
+    """Whether a recording is digital silence with the odd click in it."""
+    try:
+        return dropped_fraction(Path(wav), tail_seconds) >= MOSTLY_SILENT_FRACTION
+    except Exception:
+        # Never the reason a recording fails to start or stop.
+        return False
 
 def silence_hint(device_name: str) -> str:
     """What to actually do about a dead input, named for the device chosen."""
@@ -439,7 +540,7 @@ def build_probe_command(device: str, out: Path, platform: str,
         return build_native_command(device, out, binary) + ["--seconds", f"{seconds:g}"]
     fmt = "avfoundation" if platform == "darwin" else "dshow"
     return [
-        "ffmpeg", "-y", "-f", fmt, "-i", device,
+        "ffmpeg", "-y", "-f", fmt, "-i", _ffmpeg_device(device, platform),
         "-t", f"{seconds:g}", "-ac", "1", "-ar", "16000", str(out),
     ]
 
@@ -462,4 +563,8 @@ def probe_device_peak(device: str, platform: str,
         if not out.exists() or out.stat().st_size <= 44:
             tail = (proc.stderr or "").strip().splitlines()[-3:]
             raise RuntimeError("could not open the input device: " + " ".join(tail))
+        # A device that hands out zeros still clicks at the buffer boundaries,
+        # and one click is enough to pass a peak check. Read as no signal.
+        if is_mostly_silence(out):
+            return SILENCE_FLOOR_DBFS
         return peak_dbfs(out)

@@ -180,6 +180,12 @@ def create_app(cfg=None, runner=None, probe=None, capture=None) -> FastAPI:
         """
         found = recorder.unfinished_recordings(cfg.output_dir / "recordings",
                                                cfg.output_dir)
+        # A recording still being written is not unfinished, it is running.
+        # Offering it here invited transcribing half a meeting while the other
+        # half was still being spoken, and rewriting its header underneath the
+        # recorder that owns it.
+        live = {str(e["path"]) for e in recordings.values()}
+        found = [e for e in found if e["path"] not in live]
         for entry in found:
             try:
                 # An interrupted recording claims zero samples in its header.
@@ -215,6 +221,12 @@ def create_app(cfg=None, runner=None, probe=None, capture=None) -> FastAPI:
         when nothing is routed into it, which is indistinguishable from success
         until the transcript comes back empty.
         """
+        # Probing builds a capture device, and building one destroys any device
+        # already carrying the same UID — including the one a running meeting is
+        # being recorded from.
+        if _active()[1] is not None:
+            return JSONResponse({"error": "a recording is already running"},
+                                status_code=409)
         instance = None
         try:
             if device == AUTO_DEVICE_ID:
@@ -234,12 +246,49 @@ def create_app(cfg=None, runner=None, probe=None, capture=None) -> FastAPI:
             body["hint"] = recorder.silence_hint(name)
         return body
 
+    def _active() -> tuple[str, dict] | tuple[None, None]:
+        """The one recording in progress, if there is one."""
+        for rec_id, entry in recordings.items():
+            return rec_id, entry
+        return None, None
+
+    @app.get("/api/record/active")
+    def record_active():
+        """The recording currently running, so a reloaded page can find it again.
+
+        The page used to hold the recording's id in a variable and nowhere else,
+        so a reload lost the only handle on a running meeting: Stop went grey,
+        Record went live, and clicking it started a second recorder onto the
+        same device. That is how two recorders spent an afternoon fighting over
+        one tap on 2026-08-20.
+        """
+        rec_id, entry = _active()
+        if entry is None:
+            return {"recording": None}
+        return {"recording": {
+            "rec_id": rec_id, "path": str(entry["path"]),
+            "name": entry.get("name", ""), "title": entry.get("title", ""),
+            "recorder": entry.get("recorder", "ffmpeg"),
+            "started_at": entry.get("started_at", 0)}}
+
     @app.post("/api/record/start")
-    def record_start(device: str = Form(...), name: str = Form(default="")):
+    def record_start(device: str = Form(...), name: str = Form(default=""),
+                     title: str = Form(default="")):
+        # One recorder at a time, and it is not a UI nicety. Building a second
+        # capture device destroys the first — same UID — so a second Record
+        # click takes the running meeting's device out from under it.
+        running_id, running = _active()
+        if running is not None:
+            return JSONResponse(
+                {"error": "a recording is already running",
+                 "rec_id": running_id, "path": str(running["path"]),
+                 "title": running.get("title", "")}, status_code=409)
         rec_id = uuid.uuid4().hex[:8]
         dest = cfg.output_dir / "recordings"
         dest.mkdir(parents=True, exist_ok=True)
-        out = dest / f"recording-{time.strftime('%Y%m%d-%H%M%S')}.wav"
+        stamp = time.strftime('%Y%m%d-%H%M%S')
+        slug = recorder.slugify(title)
+        out = dest / (f"{stamp}-{slug}.wav" if slug else f"recording-{stamp}.wav")
         instance = None
         try:
             if device == AUTO_DEVICE_ID:
@@ -258,8 +307,10 @@ def create_app(cfg=None, runner=None, probe=None, capture=None) -> FastAPI:
                         "machine; build the native recorder with "
                         "scripts/build-native.sh.", out.name)
         recordings[rec_id] = {"proc": proc, "path": out, "name": name,
-                              "capture": instance, "recorder": engine_used}
-        return {"rec_id": rec_id, "path": str(out), "recorder": engine_used}
+                              "title": title.strip(), "capture": instance,
+                              "recorder": engine_used, "started_at": time.time()}
+        return {"rec_id": rec_id, "path": str(out), "recorder": engine_used,
+                "title": title.strip()}
 
     @app.get("/api/record/level")
     def record_level(rec_id: str):
@@ -276,7 +327,11 @@ def create_app(cfg=None, runner=None, probe=None, capture=None) -> FastAPI:
         body: dict = {"peak_dbfs": None, "silent": False}
         try:
             peak = recorder.peak_dbfs(entry["path"], tail_seconds=2.0)
-            body = {"peak_dbfs": round(peak, 1), "silent": recorder.is_silent(peak)}
+            # Measured over a longer window than the peak: clicks are rare, and
+            # a 2-second window can miss the one that proves the input is dead.
+            silent = (recorder.is_silent(peak)
+                      or recorder.is_mostly_silence(entry["path"], tail_seconds=30.0))
+            body = {"peak_dbfs": round(peak, 1), "silent": silent}
         except Exception:
             # The file may not have its header yet in the first moments.
             pass
@@ -322,9 +377,12 @@ def create_app(cfg=None, runner=None, probe=None, capture=None) -> FastAPI:
         path = entry["path"]
         if not path.exists() or path.stat().st_size == 0:
             return JSONResponse({"error": "recording produced no audio"}, status_code=500)
-        # Size is not evidence of content: 24 minutes of silence is 46MB.
+        # Size is not evidence of content: 24 minutes of silence is 46MB. Nor is
+        # the peak — a dead input clicks at its buffer boundaries, and one click
+        # in an hour of zeros reads as a healthy -5 dBFS. What the file is
+        # actually made of is the only question that cannot be answered wrong.
         peak = recorder.peak_dbfs(path)
-        silent = recorder.is_silent(peak)
+        silent = recorder.is_silent(peak) or recorder.is_mostly_silence(path)
         # Nor is loudness evidence of completeness. A throttled capture drops
         # most of its buffers and still peaks like a healthy recording. The
         # native recorder counts what CoreAudio never handed it; ffmpeg cannot,

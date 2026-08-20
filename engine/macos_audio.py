@@ -339,6 +339,24 @@ def destroy_system_tap(tap_id: int) -> None:
 def _device_by_uid(uid: str) -> AudioDevice | None:
     return next((d for d in list_devices() if d.uid == uid), None)
 
+# AudioHardwareCreateAggregateDevice returns an id before the device appears in
+# the system device list — the two are separate properties and CoreAudio
+# publishes the second one on its own schedule. Checking once, immediately,
+# fails perhaps one start in three; the old code hid this behind an ffmpeg
+# process launch, which took long enough to look reliable.
+_DEVICE_APPEARS_TIMEOUT = 3.0
+
+def _wait_for_device(uid: str, timeout: float = _DEVICE_APPEARS_TIMEOUT
+                     ) -> AudioDevice | None:
+    """Wait for a freshly created device to show up in the system list."""
+    import time
+    deadline = time.monotonic() + timeout
+    while True:
+        found = _device_by_uid(uid)
+        if found is not None or time.monotonic() >= deadline:
+            return found
+        time.sleep(0.05)
+
 def remove_stale_capture_device() -> None:
     """Drop a capture device orphaned by a previous run that died mid-recording."""
     stale = _device_by_uid(CAPTURE_DEVICE_UID)
@@ -361,14 +379,24 @@ class SystemCapture:
         self.name = CAPTURE_DEVICE_NAME
 
     def start(self) -> str:
-        """Create the device and return its avfoundation input id (":N")."""
+        """Create the device and return its CoreAudio UID.
+
+        A UID, not a list position: the server and the recorder walk different
+        macOS device lists, in different orders, so a position named a different
+        device to each of them. That mismatch recorded a Continuity iPhone
+        microphone through a three-hour meeting on 2026-08-20 — it opens, it
+        never errors, and it delivers digital silence.
+        """
         remove_stale_capture_device()
         self.tap_id, tap_uid = create_system_tap()
         devices = list_devices()
         mic_uid = default_device_uid(devices, "dIn ")
         mic = next((d for d in devices if d.uid == mic_uid), None)
-        if mic is None or mic.inputs == 0 or mic.uid in OUR_UIDS:
+        if mic is None or mic.inputs == 0 or mic.uid in OUR_UIDS or _is_continuity(mic):
             # No usable default mic: fall back to any real input, else tap only.
+            # A Continuity iPhone is excluded here for the same reason _pick
+            # excludes it — it leaves with the phone, and until it does it
+            # reports itself as a perfectly healthy input that returns zeros.
             mic = _pick(devices, "", "inputs")
         try:
             self.device_id = create_aggregate_device(
@@ -376,15 +404,11 @@ class SystemCapture:
         except Exception:
             self.stop()
             raise
-        # ffmpeg addresses avfoundation inputs by index, so the freshly created
-        # device has to be located in its listing by name.
-        from engine.record import list_input_devices
-        entry = next((d for d in list_input_devices("darwin")
-                      if d["name"].strip() == CAPTURE_DEVICE_NAME), None)
-        if entry is None:
+        if _wait_for_device(CAPTURE_DEVICE_UID) is None:
             self.stop()
-            raise RuntimeError("the capture device was created but ffmpeg cannot see it")
-        return entry["id"]
+            raise RuntimeError("the capture device was created but never "
+                               "appeared in the system device list")
+        return CAPTURE_DEVICE_UID
 
     def stop(self) -> None:
         if self.device_id:

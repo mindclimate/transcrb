@@ -225,13 +225,35 @@ def test_start_reports_which_recorder_got_the_meeting(tmp_path, monkeypatch):
 def test_the_recorders_own_count_beats_measuring_silence(tmp_path, monkeypatch):
     # A meeting with long genuine pauses reads as full of gaps to the silence
     # measure. The native recorder knows it lost nothing, and it is right.
-    _native_recorder(monkeypatch, np.zeros(16000 * 10), stats={"dropped": 0.0})
+    # The pauses are a noise floor, which is what a live input actually returns
+    # in a quiet room; exact zeros mean no input at all, not a quiet one.
+    rng = np.random.default_rng(0)
+    room = rng.normal(0.0, 0.001, 16000 * 10)
+    _native_recorder(monkeypatch, room, stats={"dropped": 0.0})
     client = _client_with_probe(tmp_path, -30.0)
     rec_id = client.post("/api/record/start",
                          data={"device": ":2", "name": "Mic"}).json()["rec_id"]
     body = client.post("/api/record/stop", data={"rec_id": rec_id}).json()
     assert body["dropped"] == 0.0
     assert "hint" not in body or "ProcessType" not in body["hint"]
+
+def test_a_recording_of_digital_silence_is_never_reported_as_healthy(tmp_path,
+                                                                     monkeypatch):
+    # The whole failure of 2026-08-20 in one test. The recorder was pointed at a
+    # device that opens, never errors, and returns zeros; it counted every frame
+    # it was handed and called the recording 40% lost. Occasional click
+    # artifacts at the buffer boundaries kept the peak at -5 dBFS, so the level
+    # checks passed too. Three hours of meeting, and nothing said a word.
+    dead = np.zeros(16000 * 120)
+    dead[16000 * 30] = 0.5          # the one click that fooled every peak check
+    _native_recorder(monkeypatch, dead, stats={"dropped": 0.40})
+    client = _client_with_probe(tmp_path, -30.0)
+    rec_id = client.post("/api/record/start",
+                         data={"device": "com.transcrb.capture", "name": "Mic"}).json()["rec_id"]
+    body = client.post("/api/record/stop", data={"rec_id": rec_id}).json()
+    assert body["silent"] is True           # despite a peak of -6 dBFS
+    assert body["dropped"] > 0.98           # despite the recorder claiming 0.40
+    assert body["hint"]                     # and it says so rather than transcribing
 
 def test_a_native_recording_that_lost_audio_is_not_blamed_on_the_throttle(tmp_path,
                                                                           monkeypatch):
@@ -547,3 +569,84 @@ def test_a_waiting_transcription_reports_that_it_is_queued(tmp_path):
         release.set()
         first.join(timeout=20)
         second.join(timeout=20)
+
+
+# ---- one recorder at a time, and never a lost handle on it --------------------
+# On 2026-08-20 the page was reloaded mid-meeting. The recording id lived in a
+# JavaScript variable and nowhere else, so the reload disabled Stop and enabled
+# Record; the next click built a second capture device, which destroyed the
+# first one's device out from under it — same UID — and left two recorders
+# fighting over one tap for the rest of the afternoon.
+
+def _live_client(tmp_path, monkeypatch, samples=None):
+    _native_recorder(monkeypatch, np.zeros(16000) if samples is None else samples,
+                     stats={"dropped": 0.0})
+    return _capture_client(tmp_path)
+
+def test_a_second_record_click_never_starts_a_second_recorder(tmp_path, monkeypatch):
+    client = _live_client(tmp_path, monkeypatch)
+    first = client.post("/api/record/start", data={"device": AUTO_DEVICE_ID}).json()
+    again = client.post("/api/record/start", data={"device": AUTO_DEVICE_ID})
+    assert again.status_code == 409
+    # It points at the running one rather than just refusing, so the page can
+    # take hold of the meeting instead of leaving it unstoppable.
+    assert again.json()["rec_id"] == first["rec_id"]
+
+def test_checking_the_input_while_recording_cannot_destroy_the_device(tmp_path,
+                                                                       monkeypatch):
+    # The check builds a capture device to probe it. Building one destroys any
+    # device already carrying the same UID, including the live meeting's.
+    _FakeCapture.instances = []
+    client = _live_client(tmp_path, monkeypatch)
+    client.post("/api/record/start", data={"device": AUTO_DEVICE_ID})
+    built = len(_FakeCapture.instances)
+    r = client.post("/api/record/check", data={"device": AUTO_DEVICE_ID})
+    assert r.status_code == 409
+    assert len(_FakeCapture.instances) == built     # nothing new was built
+
+def test_a_reloaded_page_can_find_the_recording_that_is_still_running(tmp_path,
+                                                                       monkeypatch):
+    client = _live_client(tmp_path, monkeypatch)
+    started = client.post("/api/record/start",
+                          data={"device": AUTO_DEVICE_ID, "title": "Priority sync"}).json()
+    active = client.get("/api/record/active").json()["recording"]
+    assert active["rec_id"] == started["rec_id"]
+    assert active["title"] == "Priority sync"
+    assert active["started_at"] > 0
+    # And it is genuinely the same recording, not a description of one.
+    assert client.post("/api/record/stop",
+                       data={"rec_id": active["rec_id"]}).status_code == 200
+
+def test_nothing_running_is_reported_as_nothing_rather_than_an_error(tmp_path):
+    assert _capture_client(tmp_path).get("/api/record/active").json()["recording"] is None
+
+def test_a_recording_still_being_written_is_not_offered_as_unfinished(tmp_path,
+                                                                      monkeypatch):
+    # Offering it invited transcribing half a meeting while the other half was
+    # still being spoken, and rewriting its header under the recorder that owns it.
+    client = _live_client(tmp_path, monkeypatch)
+    started = client.post("/api/record/start", data={"device": AUTO_DEVICE_ID}).json()
+    offered = client.get("/api/recordings/unfinished").json()["recordings"]
+    assert all(r["path"] != started["path"] for r in offered)
+
+
+# ---- naming a recording ------------------------------------------------------
+
+def test_a_named_recording_is_saved_under_that_name(tmp_path, monkeypatch):
+    client = _live_client(tmp_path, monkeypatch)
+    started = client.post("/api/record/start",
+                          data={"device": AUTO_DEVICE_ID, "title": "RPO sync"}).json()
+    assert Path(started["path"]).name.endswith("-RPO-sync.wav")
+
+def test_an_unnamed_recording_keeps_the_timestamp_name(tmp_path, monkeypatch):
+    client = _live_client(tmp_path, monkeypatch)
+    started = client.post("/api/record/start", data={"device": AUTO_DEVICE_ID}).json()
+    assert Path(started["path"]).name.startswith("recording-")
+
+def test_a_name_cannot_write_outside_the_recordings_directory(tmp_path, monkeypatch):
+    client = _live_client(tmp_path, monkeypatch)
+    started = client.post("/api/record/start",
+                          data={"device": AUTO_DEVICE_ID,
+                                "title": "../../../etc/passwd"}).json()
+    written = Path(started["path"]).resolve()
+    assert (tmp_path / "out" / "recordings").resolve() == written.parent

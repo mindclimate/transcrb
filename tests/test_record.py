@@ -256,13 +256,20 @@ def test_native_recorder_is_ignored_if_it_is_not_executable(tmp_path):
     binary.chmod(0o644)
     assert native_recorder("darwin", binary) is None
 
-def test_native_command_addresses_the_device_ffmpeg_would(tmp_path):
-    # The UI hands back avfoundation's ":N", so the native recorder resolves the
-    # same index through the same AVCaptureDevice list rather than guessing at
-    # CoreAudio's ordering, which is a different list in a different order.
+def test_native_command_addresses_the_device_by_uid(tmp_path):
+    # A UID names one device for as long as it exists. A list position names
+    # whatever happens to be sitting there, and the server and the recorder read
+    # two differently ordered lists — which is how "index 4" meant the
+    # system-audio tap to one and a Continuity iPhone microphone to the other.
+    cmd = build_native_command("com.transcrb.capture", tmp_path / "r.wav",
+                               tmp_path / "cap")
+    assert cmd[cmd.index("--device-uid") + 1] == "com.transcrb.capture"
+    assert "--device-index" not in cmd
+    assert cmd[cmd.index("--out") + 1] == str(tmp_path / "r.wav")
+
+def test_native_command_still_accepts_an_ffmpeg_index_by_hand(tmp_path):
     cmd = build_native_command(":2", tmp_path / "r.wav", tmp_path / "cap")
     assert cmd[cmd.index("--device-index") + 1] == "2"
-    assert cmd[cmd.index("--out") + 1] == str(tmp_path / "r.wav")
 
 def test_native_command_asks_for_progress_while_the_meeting_runs(tmp_path):
     out = tmp_path / "r.wav"
@@ -298,8 +305,22 @@ def test_capture_summary_is_empty_for_a_recorder_that_reports_nothing():
 def test_loss_comes_from_the_recorders_own_count_when_it_kept_one(tmp_path):
     # The native recorder knows exactly how many frames CoreAudio never handed
     # it. Counting filled-in silence instead would also count a quiet room.
-    wav = _write_wav(tmp_path / "quiet.wav", np.zeros(16000 * 4))
+    #
+    # A quiet room is a noise floor, not digital zeros — a live microphone never
+    # returns an exact zero twice in a row. Writing this fixture as zeros is what
+    # made a device that returns nothing but zeros look like a quiet room.
+    rng = np.random.default_rng(0)
+    quiet = rng.normal(0.0, 0.001, 16000 * 4)
+    wav = _write_wav(tmp_path / "quiet.wav", quiet)
     assert reported_dropped({"dropped": 0.01}, wav) == 0.01
+
+def test_a_recording_of_pure_zeros_is_lost_whatever_the_recorder_claims(tmp_path):
+    # The failure of 2026-08-20. The recorder was handed frames all afternoon
+    # and counted them as captured; every one of them was digital silence,
+    # because it had been pointed at a Continuity iPhone microphone instead of
+    # the system-audio tap. Its own count said 40% lost. The file was 99% zeros.
+    wav = _write_wav(tmp_path / "dead.wav", np.zeros(16000 * 60))
+    assert reported_dropped({"dropped": 0.40}, wav) > 0.98
 
 def test_loss_falls_back_to_measuring_silence_when_there_is_no_count(tmp_path):
     wav = _write_wav(tmp_path / "half.wav",
@@ -387,3 +408,70 @@ def test_dropped_fraction_limit_passes_the_recordings_that_were_always_fine():
     # evidence; a throttled capture recorded with the current command measured
     # 88.8% dropped on this machine, 2026-08-05.
     assert 0.20 < DROPPED_FRACTION_LIMIT < 0.60
+
+
+# ---- device identity ---------------------------------------------------------
+# The failure of 2026-08-20: the server chose the recording device by its
+# position in ffmpeg's listing, and the recorder resolved that position against a
+# differently ordered macOS list. With a Continuity iPhone microphone present the
+# two disagreed, so "record the system-audio tap" recorded the iPhone instead.
+# It opened, it never errored, and it returned digital silence for three hours.
+
+from engine.record import parse_native_listing, slugify, is_mostly_silence
+
+def test_devices_are_listed_with_the_uid_that_addresses_them():
+    found = parse_native_listing(
+        '[{"uid":"BuiltInMicrophoneDevice","name":"MacBook Pro Microphone","inputs":1},'
+        '{"uid":"com.transcrb.capture","name":"Transcrb Capture","inputs":3}]')
+    assert [d["id"] for d in found] == ["BuiltInMicrophoneDevice", "com.transcrb.capture"]
+    assert all(d["id"] == d["uid"] for d in found)
+
+def test_a_listing_that_is_not_json_is_no_devices_rather_than_a_crash():
+    assert parse_native_listing("transcrb-capture: something went wrong") == []
+
+def test_a_device_without_a_uid_is_not_offered():
+    # Better to be missing from the list than to be unaddressable in it.
+    assert parse_native_listing('[{"name":"Ghost","inputs":1}]') == []
+
+def test_pure_zeros_read_as_silence_even_with_a_click_in_them(tmp_path):
+    # One click at a buffer boundary put the peak at -6 dBFS across an hour of
+    # zeros, and every level check in the project passed on it.
+    samples = np.zeros(16000 * 60)
+    samples[16000 * 5] = 0.5
+    wav = _write_wav(tmp_path / "dead.wav", samples)
+    assert is_mostly_silence(wav) is True
+
+def test_a_real_recording_is_not_mistaken_for_silence(tmp_path):
+    wav = _write_wav(tmp_path / "live.wav", _tone(10.0, 0.3))
+    assert is_mostly_silence(wav) is False
+
+def test_a_quiet_room_is_not_mistaken_for_silence(tmp_path):
+    # A live microphone in a silent room returns a noise floor, never an exact
+    # zero twice in a row. Only a dead input returns zeros.
+    rng = np.random.default_rng(0)
+    wav = _write_wav(tmp_path / "quiet.wav", rng.normal(0.0, 0.001, 16000 * 10))
+    assert is_mostly_silence(wav) is False
+
+
+# ---- naming a recording ------------------------------------------------------
+
+def test_a_named_recording_becomes_a_filename_safe_stem():
+    assert slugify("Priority sync") == "Priority-sync"
+    assert slugify("  RPO / Bohdan + Daniil  ") == "RPO-Bohdan-Daniil"
+
+def test_a_name_cannot_escape_the_recordings_directory():
+    assert slugify("../../etc/passwd") == "etcpasswd"
+    assert slugify("/") == ""
+
+def test_an_empty_or_symbol_only_name_falls_back_to_the_timestamp():
+    assert slugify("") == ""
+    assert slugify("!!!") == ""
+    assert slugify(None) == ""
+
+def test_a_very_long_name_is_cut_rather_than_refused():
+    assert len(slugify("x" * 200)) == 60
+
+def test_a_hebrew_name_survives_being_a_filename():
+    # Half this project's meetings are in Hebrew and the name is the only place
+    # a person recognises them by.
+    assert slugify("פגישה עם בוהדן") == "פגישה-עם-בוהדן"

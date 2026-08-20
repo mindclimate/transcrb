@@ -121,14 +121,24 @@ func deviceID(forUID uid: String) -> AudioDeviceID? {
 
 /// The UID behind an ffmpeg-style ":N" input id.
 ///
-/// ffmpeg's avfoundation device numbers its audio inputs by walking
-/// `[AVCaptureDevice devicesWithMediaType:AVMediaTypeAudio]`, so resolving the
-/// index the same way is exact rather than a guess at CoreAudio's ordering,
-/// which is a different list in a different order. `uniqueID` on an audio
-/// capture device is the CoreAudio device UID.
+/// A position is not an identity, and this function is the proof. It used to
+/// walk `[AVCaptureDevice devicesWithMediaType:]`, the deprecated list, while
+/// ffmpeg had moved to a discovery session — which sorts the same devices
+/// differently. With a Continuity iPhone microphone present the two lists
+/// disagreed from index 0, so the server would say "record index 4" meaning the
+/// system-audio tap and the recorder would open something else. It opened, it
+/// never errored, and it delivered digital silence for three hours.
+///
+/// The discovery session is used now so the two agree, but nothing in Transcrb
+/// addresses a device this way any longer: `--device-uid` is exact, and this
+/// remains only so an ffmpeg-only device listing is still usable by hand.
 func uidForAVFoundationIndex(_ index: Int) -> String? {
-    let devices = AVCaptureDevice.devices(for: .audio)
+    let session = AVCaptureDevice.DiscoverySession(
+        deviceTypes: [.microphone, .external], mediaType: .audio, position: .unspecified)
+    let devices = session.devices
     guard index >= 0, index < devices.count else { return nil }
+    FileHandle.standardError.write(Data(
+        "transcrb-capture: resolving a device by position is ambiguous; prefer --device-uid\n".utf8))
     return devices[index].uniqueID
 }
 
@@ -353,6 +363,12 @@ guard let device = deviceID(forUID: wantedUID) else {
     fail("no input device with UID \(wantedUID)")
 }
 
+// Written into every progress and summary line. Which device a recording was
+// actually taken from is the first question asked of a recording that came back
+// silent, and it used to be unanswerable after the fact.
+let openedUID = wantedUID
+let openedName = stringProperty(device, kAudioObjectPropertyName) ?? ""
+
 let engine = AVAudioEngine()
 let input = engine.inputNode
 
@@ -518,7 +534,10 @@ func summaryJSON(written: Int, failures: Int, reason: String) -> String {
     "dropped":\(String(format: "%.5f", total > 0 ? lost / total : 0)),\
     "written_seconds":\(f(Double(written) / options.rate)),\
     "convert_failures":\(failures),"device_rate":\(rate),\
-    "device_channels":\(channels),"reason":"\(reason)"}
+    "device_channels":\(channels),\
+    "device_uid":"\(openedUID.replacingOccurrences(of: "\"", with: "\\\""))",\
+    "device_name":"\(openedName.replacingOccurrences(of: "\"", with: "\\\""))",\
+    "reason":"\(reason)"}
     """
 }
 
@@ -720,11 +739,29 @@ watchdogThread.start()
 
 stopFlag.wait(seconds: options.seconds)
 
+// Shutting down must not be able to hang. `engine.stop()` blocks indefinitely
+// when the device it is bound to has gone away, and the writer join below span
+// on `isFinished` with no bound, so a recorder asked to stop could keep the tap
+// and its file open forever: on 2026-08-20 one ignored SIGTERM for eight
+// minutes and had to be killed. The samples are already on disk — the WAV is
+// written as it goes — so leaving by the back door costs nothing but a header,
+// and the header is repaired on the way in.
+let shutdownGuard = Thread {
+    Thread.sleep(forTimeInterval: 10.0)
+    FileHandle.standardError.write(Data(
+        "transcrb-capture: shutdown did not complete in 10s; exiting anyway\n".utf8))
+    publishProgress(summaryJSON(written: written, failures: convertFailures,
+                                reason: stopFlag.reason + "-forced"))
+    exit(0)
+}
+shutdownGuard.start()
+
 NotificationCenter.default.removeObserver(reconfigureObserver)
 engine.stop()
 input.removeTap(onBus: 0)
 ring.close()
-while !writerThread.isFinished { usleep(20_000) }
+let joinUntil = Date().addingTimeInterval(5.0)
+while !writerThread.isFinished && Date() < joinUntil { usleep(20_000) }
 writer.close()
 
 let summary = summaryJSON(written: written, failures: convertFailures,
