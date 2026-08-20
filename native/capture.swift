@@ -616,12 +616,17 @@ writerThread.start()
 // that on an AVAudioEngine internal thread invites a deadlock.
 let reconfigureQueue = OperationQueue()
 reconfigureQueue.maxConcurrentOperationCount = 1
-let reconfigureObserver = NotificationCenter.default.addObserver(
-    forName: .AVAudioEngineConfigurationChange, object: engine,
-    queue: reconfigureQueue) { _ in
+
+/// Rebuild the capture chain around whatever the device looks like now.
+///
+/// `force` skips the "did anything actually change" test, for the case where
+/// nothing was posted at all and the only evidence is that audio stopped
+/// arriving. Serialised onto `reconfigureQueue`, so the notification and the
+/// watchdog can never rebuild at the same time.
+func rebuildCapture(force: Bool) {
     guard !stopFlag.isStopped else { return }
 
-    // AVAudioEngine posts one of these shortly after the input device is set,
+    // AVAudioEngine posts a notification shortly after the input device is set,
     // when nothing has actually changed. Restarting on it would cost 75ms of
     // every recording for nothing. A real change either alters the format or
     // stops the engine.
@@ -630,7 +635,7 @@ let reconfigureObserver = NotificationCenter.default.addObserver(
     let unchanged = current.sampleRate == chain.input.sampleRate
         && current.channelCount == chain.input.channelCount
     chain.lock.unlock()
-    if unchanged && engine.isRunning { return }
+    if !force && unchanged && engine.isRunning { return }
 
     let downAt = Date().timeIntervalSince1970
     input.removeTap(onBus: 0)
@@ -686,6 +691,10 @@ let reconfigureObserver = NotificationCenter.default.addObserver(
     counters.reconfigurations += 1
 }
 
+let reconfigureObserver = NotificationCenter.default.addObserver(
+    forName: .AVAudioEngineConfigurationChange, object: engine,
+    queue: reconfigureQueue) { _ in rebuildCapture(force: false) }
+
 // Progress is published from here, not from the writer thread. The writer
 // blocks waiting for audio, so a device that stops delivering would freeze the
 // progress file at its last healthy reading — a recording capturing nothing
@@ -693,13 +702,42 @@ let reconfigureObserver = NotificationCenter.default.addObserver(
 // Started once the engine is running, so the clock it measures against is the
 // moment audio should have begun arriving. A device that never delivers a single
 // buffer then reads as wholly lost, which is what it is.
+// How long to let a silent device stay silent before rebuilding it rather than
+// waiting to be told. Measured on this machine 2026-08-20: swapping the audio
+// output mid-recording stopped delivery for 31.6 seconds before macOS posted a
+// configuration change at all, and every second of that is simply absent from
+// the recording. Waiting for the notification is not enough — sometimes it does
+// not come until the device feels like it. Comfortably longer than the largest
+// legitimate pause between buffers, so an ordinary recording never rebuilds.
+// 1.5s is roughly 17 times the interval between buffers (4096 frames at 48 kHz
+// is 85ms), so ordinary jitter cannot reach it, while every second above it is
+// meeting that never lands in the file. Measured with headphones swapped
+// mid-recording: at 3.0s the hole was 3.5s and four spoken numbers went missing.
+let RECOVER_AFTER_SECONDS = 1.5
+let RECOVER_RETRY_SECONDS = 5.0
+
 let watchdogThread = Thread {
     var lastTick = Date().timeIntervalSince1970
+    var lastRecoveryAt = 0.0
     while !stopFlag.isStopped {
         Thread.sleep(forTimeInterval: 0.5)
         let now = Date().timeIntervalSince1970
-        if now - counters.lastBufferAt > STALL_GRACE_SECONDS {
+        let quietFor = now - counters.lastBufferAt
+        if quietFor > STALL_GRACE_SECONDS {
             counters.stallSeconds += now - lastTick
+        }
+        // Nothing is arriving and nothing told us why. Rebuild around whatever
+        // the device is now, then leave it a moment before trying again, so a
+        // genuinely dead input is not restarted twice a second for an hour.
+        if quietFor > RECOVER_AFTER_SECONDS,
+           now - lastRecoveryAt > RECOVER_RETRY_SECONDS,
+           reconfigureQueue.operationCount == 0 {
+            lastRecoveryAt = now
+            let why = "transcrb-capture: no audio for "
+                + String(format: "%.1f", quietFor)
+                + "s; rebuilding the capture rather than waiting to be told\n"
+            FileHandle.standardError.write(Data(why.utf8))
+            reconfigureQueue.addOperation { rebuildCapture(force: true) }
         }
         lastTick = now
         publishProgress(summaryJSON(written: written, failures: convertFailures,
