@@ -254,7 +254,7 @@ hand — no longer destroys the first transcript. The earlier files move to
 `out/<name>/previous/<when-they-were-made>/`, so the two can be compared:
 
 ```
-out/recording-20260730-124519/
+out/30.07.2026-1245 Weekly with Vladi/
   transcript.md                     <- newest run, always
   previous/20260730-134728/         <- the run made at 13:47
   previous/20260730-143255/         <- the run made at 14:32

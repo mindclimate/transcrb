@@ -22,6 +22,14 @@ Double-click **Start Transcrb.command**. Your browser opens with two panels:
   conversation, with nothing to configure. Recordings transcribe themselves when
   you press stop.
 
+The **Name** box at the top right names whatever you record or transcribe next —
+a meeting title, in English or Hebrew. Leave it blank and the transcript is
+called by the day and time it was made, `02.09.2026-1912`. Named, it becomes
+`02.09.2026-1912 Weekly with Vladi`: the date stays in front so the folder list
+is still in the order the meetings happened. Once a transcript is on screen the
+same box renames it — **Rename** moves the folder and the copy filed with it,
+and keeps the original date.
+
 Transcripts are saved in `out/`, one folder per recording, as Markdown, JSON and
 subtitles. Close the terminal window to stop Transcrb.
 

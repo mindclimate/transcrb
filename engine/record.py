@@ -165,18 +165,6 @@ def native_recorder(platform: str, binary: Path = NATIVE_RECORDER) -> Path | Non
 def progress_path(out: Path) -> Path:
     return Path(out).with_suffix(".progress.json")
 
-# The name a recording is given becomes its filename, and its filename becomes
-# the transcript's folder, so it has to survive being both. Kept to characters
-# that mean the same thing everywhere rather than escaped cleverly: a meeting
-# named with a slash is not worth a directory traversal.
-_SLUG_LIMIT = 60
-
-def slugify(title: str) -> str:
-    """A filename-safe stem for a recording the user named. '' if unusable."""
-    cleaned = re.sub(r"[^\w\s-]", "", (title or ""), flags=re.UNICODE).strip()
-    cleaned = re.sub(r"[\s_-]+", "-", cleaned).strip("-")
-    return cleaned[:_SLUG_LIMIT].strip("-")
-
 def build_native_command(device: str, out: Path, binary: Path,
                          progress: Path | None = None) -> list[str]:
     """Record `device` with the native recorder.

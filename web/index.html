@@ -53,6 +53,12 @@
     <span class="pipe">|</span>
     <span class="appname">LOCAL TRANSCRIPTION</span>
     <span class="spacer"></span>
+    <label class="naming">Name
+      <input id="name" class="search" type="text" placeholder="optional, e.g. Weekly with Vladi"
+        title="Names whatever you record or transcribe next. Leave blank for the date and time it was made.">
+    </label>
+    <button id="rename" class="renamebtn" disabled
+      title="Rename the transcript shown below">Rename</button>
   </header>
   <div class="statusbar"><span>100% local · nothing leaves this machine</span></div>
   <main class="main">
@@ -77,10 +83,6 @@
     </div>
     <div class="panel">
       <h2>Record (mic / system audio)</h2>
-      <div class="row">
-        <label>Name: <input id="recName" type="text" placeholder="optional, e.g. Priority sync"
-          style="width:220px" title="Names the recording and its transcript. Leave blank for a timestamp."></label>
-      </div>
       <div class="row">
         <label>Input: <select id="device"><option value="">loading…</option></select></label>
         <button id="recStart" disabled>● Record</button>
@@ -163,6 +165,7 @@
         } catch (e) { /* polling is best-effort */ }
       }, 1000);
 
+      $("#rename").disabled = true;
       try {
         const r = await fetch("/api/transcribe", { method: "POST", body: fd });
         const j = await r.json();
@@ -173,6 +176,11 @@
         const who = (j.speakers && j.speakers.length)
           ? ` · ${j.speakers.length} speaker${j.speakers.length > 1 ? "s" : ""}` : "";
         $("#status").textContent = `Done (${j.language})${who} → ${j.md}`;
+        // The field that named it now renames it: the name is usually only
+        // obvious once you can see what the meeting turned out to be.
+        showing = j.name;
+        $("#name").value = nameOf(j.name);
+        $("#rename").disabled = false;
       } catch (err) {
         $("#status").textContent = "Error: " + err.message;
       } finally {
@@ -183,10 +191,42 @@
       }
     }
 
+    // The transcript the Rename button acts on: the last one produced.
+    let showing = null;
+
+    // The stamp belongs to the moment, not to the name. Editing shows only the
+    // part a person chose, so renaming cannot silently change the date.
+    // A dropped file has no stamp — its whole folder name is the name.
+    const nameOf = folder => {
+      const m = /^\d{2}\.\d{2}\.\d{4}-\d{4}(?: (.*))?$/.exec(folder || "");
+      return m ? (m[1] || "") : (folder || "");
+    };
+
+    $("#rename").onclick = async () => {
+      if (!showing) return;
+      const fd = new FormData();
+      fd.append("name", showing);
+      fd.append("title", $("#name").value);
+      $("#rename").disabled = true;
+      try {
+        const r = await fetch("/api/rename", { method: "POST", body: fd });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || r.statusText);
+        showing = j.name;
+        $("#name").value = nameOf(j.name);
+        $("#status").textContent = `Renamed → ${j.md}`;
+      } catch (err) {
+        $("#status").textContent = "Error: " + err.message;
+      } finally {
+        $("#rename").disabled = false;
+      }
+    };
+
     $("#go").onclick = () => {
       if (!chosen) { $("#status").textContent = "Choose a file first."; return; }
       const fd = new FormData();
       fd.append("file", chosen);
+      fd.append("title", $("#name").value);
       return runTranscription(fd);
     };
 
@@ -255,6 +295,7 @@
           b.onclick = () => {
             const fd = new FormData();
             fd.append("server_path", recordings[b.dataset.orphan].path);
+            fd.append("title", $("#name").value);
             runTranscription(fd);
           };
         });
@@ -281,7 +322,8 @@
       const fd = new FormData();
       fd.append("device", $("#device").value);
       fd.append("name", deviceName());
-      fd.append("title", $("#recName").value);
+      fd.append("title", $("#name").value);
+      $("#rename").disabled = true;
       const r = await fetch("/api/record/start", { method: "POST", body: fd });
       const j = await r.json();
       if (r.status === 409) {
@@ -312,7 +354,7 @@
       try {
         const { recording } = await (await fetch("/api/record/active")).json();
         if (!recording) return false;
-        $("#recName").value = recording.title || "";
+        $("#name").value = recording.title || "";
         runMeter(recording.rec_id, recording.started_at * 1000);
         $("#status").textContent = "Reconnected to a recording already in progress.";
         return true;

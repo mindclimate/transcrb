@@ -417,7 +417,7 @@ def test_dropped_fraction_limit_passes_the_recordings_that_were_always_fine():
 # two disagreed, so "record the system-audio tap" recorded the iPhone instead.
 # It opened, it never errored, and it returned digital silence for three hours.
 
-from engine.record import parse_native_listing, slugify, is_mostly_silence
+from engine.record import parse_native_listing, is_mostly_silence
 
 def test_devices_are_listed_with_the_uid_that_addresses_them():
     found = parse_native_listing(
@@ -451,27 +451,3 @@ def test_a_quiet_room_is_not_mistaken_for_silence(tmp_path):
     rng = np.random.default_rng(0)
     wav = _write_wav(tmp_path / "quiet.wav", rng.normal(0.0, 0.001, 16000 * 10))
     assert is_mostly_silence(wav) is False
-
-
-# ---- naming a recording ------------------------------------------------------
-
-def test_a_named_recording_becomes_a_filename_safe_stem():
-    assert slugify("Priority sync") == "Priority-sync"
-    assert slugify("  RPO / Bohdan + Daniil  ") == "RPO-Bohdan-Daniil"
-
-def test_a_name_cannot_escape_the_recordings_directory():
-    assert slugify("../../etc/passwd") == "etcpasswd"
-    assert slugify("/") == ""
-
-def test_an_empty_or_symbol_only_name_falls_back_to_the_timestamp():
-    assert slugify("") == ""
-    assert slugify("!!!") == ""
-    assert slugify(None) == ""
-
-def test_a_very_long_name_is_cut_rather_than_refused():
-    assert len(slugify("x" * 200)) == 60
-
-def test_a_hebrew_name_survives_being_a_filename():
-    # Half this project's meetings are in Hebrew and the name is the only place
-    # a person recognises them by.
-    assert slugify("פגישה עם בוהדן") == "פגישה-עם-בוהדן"

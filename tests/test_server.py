@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 from fastapi.testclient import TestClient
 from engine.types import TranscriptResult, Segment
@@ -632,16 +633,19 @@ def test_a_recording_still_being_written_is_not_offered_as_unfinished(tmp_path,
 
 # ---- naming a recording ------------------------------------------------------
 
+STAMPED = re.compile(r"^\d{2}\.\d{2}\.\d{4}-\d{4}")
+
 def test_a_named_recording_is_saved_under_that_name(tmp_path, monkeypatch):
     client = _live_client(tmp_path, monkeypatch)
     started = client.post("/api/record/start",
                           data={"device": AUTO_DEVICE_ID, "title": "RPO sync"}).json()
-    assert Path(started["path"]).name.endswith("-RPO-sync.wav")
+    name = Path(started["path"]).name
+    assert STAMPED.match(name) and name.endswith(" RPO sync.wav")
 
-def test_an_unnamed_recording_keeps_the_timestamp_name(tmp_path, monkeypatch):
+def test_an_unnamed_recording_is_called_by_its_day_and_time(tmp_path, monkeypatch):
     client = _live_client(tmp_path, monkeypatch)
     started = client.post("/api/record/start", data={"device": AUTO_DEVICE_ID}).json()
-    assert Path(started["path"]).name.startswith("recording-")
+    assert re.fullmatch(r"\d{2}\.\d{2}\.\d{4}-\d{4}\.wav", Path(started["path"]).name)
 
 def test_a_name_cannot_write_outside_the_recordings_directory(tmp_path, monkeypatch):
     client = _live_client(tmp_path, monkeypatch)
@@ -650,3 +654,105 @@ def test_a_name_cannot_write_outside_the_recordings_directory(tmp_path, monkeypa
                                 "title": "../../../etc/passwd"}).json()
     written = Path(started["path"]).resolve()
     assert (tmp_path / "out" / "recordings").resolve() == written.parent
+
+
+# ---- naming a transcription of a dropped file --------------------------------
+
+def test_a_named_upload_is_filed_under_that_name_not_the_filename(tmp_path):
+    client = _client(tmp_path)
+    r = client.post("/api/transcribe", files={"file": ("call.wav", b"x", "audio/wav")},
+                    data={"lang": "en", "diarize": "false", "title": "RPO sync"})
+    body = r.json()
+    assert STAMPED.match(body["name"]) and body["name"].endswith(" RPO sync")
+    assert Path(body["md"]).exists()
+
+def test_an_unnamed_upload_is_still_filed_under_its_filename(tmp_path):
+    # The file already has a name a person chose. Replacing it with a timestamp
+    # would lose the only thing that says what it is.
+    client = _client(tmp_path)
+    r = client.post("/api/transcribe", files={"file": ("call.wav", b"x", "audio/wav")},
+                    data={"lang": "en", "diarize": "false"})
+    assert r.json()["name"] == "call"
+
+
+# ---- renaming a finished transcript ------------------------------------------
+
+def _transcribe(client, filename="call.wav", **data):
+    return client.post("/api/transcribe",
+                       files={"file": (filename, b"x", "audio/wav")},
+                       data={"lang": "en", "diarize": "false", **data}).json()
+
+def test_a_finished_transcript_can_be_renamed(tmp_path):
+    client = _client(tmp_path)
+    done = _transcribe(client)
+    r = client.post("/api/rename", data={"name": done["name"], "title": "RPO sync"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["name"] == "RPO sync"
+    assert (tmp_path / "out" / "RPO sync" / "transcript.md").exists()
+    assert not (tmp_path / "out" / "call").exists()
+    assert Path(body["md"]) == tmp_path / "out" / "RPO sync" / "transcript.md"
+
+def test_renaming_a_recording_keeps_the_moment_it_was_made(tmp_path):
+    client = _client(tmp_path)
+    done = _transcribe(client, "02.09.2026-1912.wav")
+    body = client.post("/api/rename",
+                       data={"name": done["name"], "title": "RPO sync"}).json()
+    assert body["name"] == "02.09.2026-1912 RPO sync"
+
+def test_renaming_onto_an_existing_transcript_is_refused(tmp_path):
+    # Renaming must never be the thing that loses a transcript.
+    client = _client(tmp_path)
+    _transcribe(client, "keep.wav")
+    done = _transcribe(client, "call.wav")
+    r = client.post("/api/rename", data={"name": done["name"], "title": "keep"})
+    assert r.status_code == 409
+    assert (tmp_path / "out" / "keep" / "transcript.md").exists()
+    assert (tmp_path / "out" / "call" / "transcript.md").exists()
+
+def test_renaming_something_that_is_not_there_is_a_404(tmp_path):
+    client = _client(tmp_path)
+    r = client.post("/api/rename", data={"name": "nothing", "title": "RPO sync"})
+    assert r.status_code == 404
+
+def test_a_rename_cannot_reach_outside_the_output_directory(tmp_path):
+    client = _client(tmp_path)
+    _transcribe(client)
+    outside = tmp_path / "secret"
+    outside.mkdir()
+    r = client.post("/api/rename",
+                    data={"name": "../secret", "title": "RPO sync"})
+    assert r.status_code in (400, 404)
+    assert outside.exists()
+
+def test_a_rename_to_nothing_is_refused(tmp_path):
+    client = _client(tmp_path)
+    done = _transcribe(client)
+    r = client.post("/api/rename", data={"name": done["name"], "title": "!!!"})
+    assert r.status_code == 400
+    assert (tmp_path / "out" / "call" / "transcript.md").exists()
+
+def test_two_recordings_in_the_same_minute_do_not_overwrite_each_other(tmp_path, monkeypatch):
+    # The stamp is only accurate to the minute, so a stopped-and-restarted
+    # recording can ask for a name that is already taken.
+    client = _live_client(tmp_path, monkeypatch)
+    first = client.post("/api/record/start", data={"device": AUTO_DEVICE_ID}).json()
+    client.post("/api/record/stop", data={"rec_id": first["rec_id"]})
+    second = client.post("/api/record/start", data={"device": AUTO_DEVICE_ID}).json()
+    assert second["path"] != first["path"]
+    assert Path(first["path"]).exists()
+
+def test_renaming_also_renames_the_copy_that_was_filed_elsewhere(tmp_path):
+    # The inbox copy is what other tools see. Leaving it under the old name
+    # makes the rename look like it did nothing.
+    from engine.config import Config
+    from fastapi.testclient import TestClient
+    from web.server import create_app
+    inbox = tmp_path / "inbox"
+    cfg = Config(output_dir=tmp_path / "out", inbox=inbox, hf_token=None,
+                 compute_type="int8", fallback_language="en")
+    client = TestClient(create_app(cfg=cfg, runner=_runner))
+    done = _transcribe(client)
+    client.post("/api/rename", data={"name": done["name"], "title": "RPO sync"})
+    assert (inbox / "RPO sync.md").exists()
+    assert not (inbox / "call.md").exists()

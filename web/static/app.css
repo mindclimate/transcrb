@@ -35,6 +35,13 @@ header.titlebar{flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:8
   border:1px solid #38309a;background:rgba(255,255,255,.94);color:var(--ink)}
 .titlebar input.search::placeholder{color:#9aa0b2}
 .titlebar input.search:focus{outline:none;box-shadow:0 0 0 2px rgba(255,255,255,.55)}
+.titlebar .naming{flex:0 0 auto;display:flex;align-items:center;gap:8px;
+  font-family:var(--mono);font-size:11px;letter-spacing:2px;text-transform:uppercase;opacity:.92}
+.titlebar .renamebtn{flex:0 0 auto;font-family:var(--mono);font-size:11px;letter-spacing:2px;
+  text-transform:uppercase;padding:6px 12px;border:0;border-radius:var(--r);cursor:pointer;
+  color:#fff;background:rgba(255,255,255,.14)}
+.titlebar .renamebtn:hover:not(:disabled){background:rgba(255,255,255,.24)}
+.titlebar .renamebtn:disabled{opacity:.4;cursor:default}
 .titlebar a.learnlink{flex:0 0 auto;font-family:var(--mono);font-size:11px;letter-spacing:2px;text-transform:uppercase;
   color:#fff;text-decoration:none;opacity:.85;border:1px solid rgba(255,255,255,.45);border-radius:var(--r);padding:5px 10px}
 .titlebar a.learnlink:hover{opacity:1;background:rgba(255,255,255,.14)}
@@ -219,6 +226,8 @@ a.row .rn{font-size:12px;color:var(--muted);margin-left:auto;max-width:46%;text-
   .titlebar .pipe{display:none}
   .titlebar .spacer{flex:0 0 4px}
   .titlebar input.search{flex:1 1 auto;width:auto;min-width:0}
+  .titlebar .naming{flex:1 1 auto;min-width:0;gap:6px}
+  .titlebar .naming input.search{flex:1 1 auto;width:auto;min-width:0}
   .statusbar{overflow-x:auto;white-space:nowrap;gap:13px;-webkit-overflow-scrolling:touch}
   .statusbar .gen{margin-left:0}
   main.main{padding:14px 14px 70px}

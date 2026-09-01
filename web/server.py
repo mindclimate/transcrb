@@ -14,6 +14,7 @@ from engine.config import PROJECT_ROOT, load_config
 from engine.logs import setup_logging
 from engine.pipeline import transcribe_file
 from engine.output import write_outputs
+from engine import naming
 from engine import record as recorder
 from engine.macos_audio import CAPTURE_DEVICE_NAME
 
@@ -32,6 +33,19 @@ _TRANSCRIBE_SLOT = threading.Semaphore(1)
 # It is not a real device until a recording starts.
 AUTO_DEVICE_ID = "auto"
 AUTO_DEVICE_NAME = "Call audio + my mic (automatic)"
+
+def _free_path(dest: Path, stem: str, suffix: str) -> Path:
+    """`dest/stem+suffix`, numbered if that is already taken.
+
+    The stamp is only accurate to the minute, so stopping and starting again
+    inside one minute asks for a name that already holds a recording.
+    """
+    path = dest / f"{stem}{suffix}"
+    n = 2
+    while path.exists():
+        path = dest / f"{stem} {n}{suffix}"
+        n += 1
+    return path
 
 def _default_capture_factory():
     """The tap-backed capture class, when this machine supports it."""
@@ -135,15 +149,20 @@ def create_app(cfg=None, runner=None, probe=None, capture=None) -> FastAPI:
                          lang: str = Form(default=""),
                          diarize: str = Form(default="true"),
                          speakers: str = Form(default=""),
+                         title: str = Form(default=""),
                          job: str = Form(default="")):
+        named = naming.slugify(title)
         try:
             if server_path:
                 # A file this server recorded — it never left the machine.
                 src = Path(server_path).resolve()
                 if cfg.output_dir.resolve() not in src.parents or not src.is_file():
                     return JSONResponse({"error": "unknown recording"}, status_code=400)
+                # The recording was stamped when it started. A name typed since
+                # replaces the name, never the moment it was made.
+                name = naming.rename(src.stem, title) if named else src.stem
                 return JSONResponse(
-                    await _run_and_write(src, src.stem, lang, diarize, speakers, job))
+                    await _run_and_write(src, name, lang, diarize, speakers, job))
 
             if file is None or not file.filename:
                 return JSONResponse({"error": "no file provided"}, status_code=400)
@@ -152,7 +171,10 @@ def create_app(cfg=None, runner=None, probe=None, capture=None) -> FastAPI:
                 src = Path(td) / safe
                 with open(src, "wb") as f:
                     shutil.copyfileobj(file.file, f)
-                body = await _run_and_write(src, Path(safe).stem, lang, diarize,
+                # An unnamed upload keeps the name a person already gave
+                # the file; a timestamp would say less than the filename does.
+                name = naming.compose(title) if named else Path(safe).stem
+                body = await _run_and_write(src, name, lang, diarize,
                                             speakers, job)
             return JSONResponse(body)
         except Exception as exc:
@@ -286,9 +308,7 @@ def create_app(cfg=None, runner=None, probe=None, capture=None) -> FastAPI:
         rec_id = uuid.uuid4().hex[:8]
         dest = cfg.output_dir / "recordings"
         dest.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime('%Y%m%d-%H%M%S')
-        slug = recorder.slugify(title)
-        out = dest / (f"{stamp}-{slug}.wav" if slug else f"recording-{stamp}.wav")
+        out = _free_path(dest, naming.compose(title), ".wav")
         instance = None
         try:
             if device == AUTO_DEVICE_ID:
@@ -401,6 +421,38 @@ def create_app(cfg=None, runner=None, probe=None, capture=None) -> FastAPI:
                         "layer (%s)", path.name, dropped * 100, used)
             body["hint"] = recorder.dropped_hint(dropped, used)
         return body
+
+    @app.post("/api/rename")
+    def rename_transcript(name: str = Form(...), title: str = Form(default="")):
+        """Rename a finished transcript's folder, and the copy filed with it."""
+        if name != Path(name).name or name in ("", ".", ".."):
+            return JSONResponse({"error": "unknown transcript"}, status_code=400)
+        src = cfg.output_dir / name
+        if not src.is_dir():
+            return JSONResponse({"error": "unknown transcript"}, status_code=404)
+        try:
+            new = naming.rename(name, title)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        dest = cfg.output_dir / new
+        if dest.exists() and dest != src:
+            # A rename must never be the thing that loses a transcript.
+            return JSONResponse({"error": f"{new} already exists"}, status_code=409)
+        if dest != src:
+            src.rename(dest)
+            _rename_filed_copies(name, new)
+        log.info("Renamed transcript %s to %s", name, new)
+        return {"name": new, "md": str(dest / "transcript.md"),
+                "json": str(dest / "transcript.json")}
+
+    def _rename_filed_copies(old: str, new: str) -> None:
+        """Follow the rename into the inbox, where other tools read from."""
+        if cfg.inbox is None:
+            return
+        for suffix in (".md", ".json"):
+            filed = Path(cfg.inbox) / f"{old}{suffix}"
+            if filed.is_file():
+                filed.rename(Path(cfg.inbox) / f"{new}{suffix}")
 
     @app.get("/api/file")
     def get_file(path: str):
