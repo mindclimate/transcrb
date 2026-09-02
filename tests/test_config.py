@@ -24,6 +24,16 @@ def test_reads_file_values(tmp_path, monkeypatch):
     assert cfg.fallback_language == "he"
     assert cfg.hf_token == "abc"
 
+def test_brains_root_defaults_to_the_folder_holding_this_project(tmp_path):
+    """The brains are the sibling projects, so nothing needs configuring."""
+    from engine.config import PROJECT_ROOT
+    assert load_config(tmp_path / "missing.toml").brains_root == PROJECT_ROOT.parent
+
+def test_brains_root_can_be_pointed_somewhere_else(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text(f'brains_root = "{tmp_path / "elsewhere"}"\n')
+    assert load_config(p).brains_root == tmp_path / "elsewhere"
+
 def test_env_overrides_file_token(tmp_path, monkeypatch):
     p = tmp_path / "config.toml"
     p.write_text('hf_token = "file-token"\n')

@@ -756,3 +756,67 @@ def test_renaming_also_renames_the_copy_that_was_filed_elsewhere(tmp_path):
     client.post("/api/rename", data={"name": done["name"], "title": "RPO sync"})
     assert (inbox / "RPO sync.md").exists()
     assert not (inbox / "call.md").exists()
+
+# ---- filing a finished transcript into a brain ----
+
+def _brains_client(tmp_path, *names):
+    """A client whose brains are `names`, each a brain-kit project on disk."""
+    from engine.config import Config
+    projects = tmp_path / "projects"
+    for name in names:
+        (projects / name / "brain" / "inbox").mkdir(parents=True)
+        (projects / name / "brain" / "brain.toml").write_text(
+            f'[brain]\ndisplay_name = "{name} Brain"\n', encoding="utf-8")
+    cfg = Config(output_dir=tmp_path / "out", inbox=None, hf_token=None,
+                 compute_type="int8", fallback_language="en",
+                 brains_root=projects)
+    return TestClient(create_app(cfg=cfg, runner=_runner)), projects
+
+def test_brains_are_found_on_disk_not_configured(tmp_path):
+    client, _ = _brains_client(tmp_path, "WorkBrain", "Kadmi")
+    body = client.get("/api/brains").json()
+    assert [b["name"] for b in body["brains"]] == ["Kadmi Brain", "WorkBrain Brain"]
+    assert [b["slug"] for b in body["brains"]] == ["Kadmi", "WorkBrain"]
+
+def test_no_brains_is_an_empty_list_not_an_error(tmp_path):
+    from engine.config import Config
+    cfg = Config(output_dir=tmp_path / "out", inbox=None, hf_token=None,
+                 compute_type="int8", fallback_language="en",
+                 brains_root=tmp_path / "nowhere")
+    client = TestClient(create_app(cfg=cfg, runner=_runner))
+    r = client.get("/api/brains")
+    assert r.status_code == 200 and r.json()["brains"] == []
+
+def test_ingest_files_the_transcript_into_the_chosen_brain(tmp_path):
+    client, projects = _brains_client(tmp_path, "WorkBrain", "Kadmi")
+    done = _transcribe(client)
+    r = client.post("/api/ingest", data={"name": done["name"], "brain": "Kadmi"})
+    assert r.status_code == 200 and r.json()["brain"] == "Kadmi Brain"
+    assert (projects / "Kadmi" / "brain" / "inbox" / "call.md").is_file()
+    assert (projects / "Kadmi" / "brain" / "inbox" / "call.json").is_file()
+    # Only the brain that was chosen. Filing into all of them would have every
+    # brain ingest every meeting.
+    assert not (projects / "WorkBrain" / "brain" / "inbox" / "call.md").exists()
+
+def test_ingest_rejects_an_unknown_brain(tmp_path):
+    client, _ = _brains_client(tmp_path, "WorkBrain")
+    done = _transcribe(client)
+    r = client.post("/api/ingest", data={"name": done["name"], "brain": "Nope"})
+    assert r.status_code == 404
+
+def test_ingest_rejects_a_transcript_outside_the_output_dir(tmp_path):
+    client, _ = _brains_client(tmp_path, "WorkBrain")
+    r = client.post("/api/ingest",
+                    data={"name": "../../etc", "brain": "WorkBrain"})
+    assert r.status_code == 404
+
+def test_renaming_follows_the_copy_filed_into_a_brain(tmp_path):
+    """The brain reads the inbox by filename; the old name would be ingested
+    as a meeting that no longer exists anywhere else."""
+    client, projects = _brains_client(tmp_path, "WorkBrain")
+    done = _transcribe(client)
+    client.post("/api/ingest", data={"name": done["name"], "brain": "WorkBrain"})
+    client.post("/api/rename", data={"name": done["name"], "title": "RPO sync"})
+    inbox = projects / "WorkBrain" / "brain" / "inbox"
+    assert (inbox / "RPO sync.md").is_file()
+    assert not (inbox / "call.md").exists()

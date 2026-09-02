@@ -16,6 +16,9 @@ class Config:
     hf_token: str | None
     compute_type: str
     fallback_language: str
+    # Where to look for brains to file transcripts into. Defaults to the folder
+    # holding this project, because that is where the sibling projects are.
+    brains_root: Path | None = None
 
 def _anchored(value: str) -> Path:
     """Resolve a configured directory against the project root, not the cwd.
@@ -35,6 +38,7 @@ def load_config(path: Path | None = None) -> Config:
         with open(path, "rb") as f:
             data = tomllib.load(f)
     inbox = data.get("inbox")
+    brains_root = data.get("brains_root")
     hf_token = os.environ.get("HF_TOKEN") or data.get("hf_token")
     return Config(
         output_dir=_anchored(data.get("output_dir", "out")),
@@ -42,4 +46,5 @@ def load_config(path: Path | None = None) -> Config:
         hf_token=hf_token,
         compute_type=data.get("compute_type", "int8"),
         fallback_language=data.get("fallback_language", "en"),
+        brains_root=_anchored(brains_root) if brains_root else PROJECT_ROOT.parent,
     )

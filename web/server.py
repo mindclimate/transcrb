@@ -14,6 +14,7 @@ from engine.config import PROJECT_ROOT, load_config
 from engine.logs import setup_logging
 from engine.pipeline import transcribe_file
 from engine.output import write_outputs
+from engine import brains as brainkit
 from engine import naming
 from engine import record as recorder
 from engine.macos_audio import CAPTURE_DEVICE_NAME
@@ -446,13 +447,70 @@ def create_app(cfg=None, runner=None, probe=None, capture=None) -> FastAPI:
                 "json": str(dest / "transcript.json")}
 
     def _rename_filed_copies(old: str, new: str) -> None:
-        """Follow the rename into the inbox, where other tools read from."""
-        if cfg.inbox is None:
-            return
-        for suffix in (".md", ".json"):
-            filed = Path(cfg.inbox) / f"{old}{suffix}"
-            if filed.is_file():
-                filed.rename(Path(cfg.inbox) / f"{new}{suffix}")
+        """Follow the rename wherever the transcript has already been filed."""
+        if cfg.inbox is not None:
+            for suffix in (".md", ".json"):
+                filed = Path(cfg.inbox) / f"{old}{suffix}"
+                if filed.is_file():
+                    filed.rename(Path(cfg.inbox) / f"{new}{suffix}")
+        # A transcript is usually named properly only once it can be read,
+        # which is often after it has been ingested.
+        try:
+            for moved in brainkit.follow_rename(cfg.brains_root, old, new):
+                log.info("Renamed the copy filed in %s to %s",
+                         moved.parent, moved.name)
+        except Exception:
+            log.exception("Could not follow the rename into the brains")
+
+    def _transcript_dir(name: str) -> Path | None:
+        """The folder a finished transcript lives in, if that name names one."""
+        if name != Path(name).name or name in ("", ".", ".."):
+            return None
+        found = cfg.output_dir / name
+        return found if found.is_dir() else None
+
+    @app.get("/api/brains")
+    def list_brains():
+        """The brains a transcript can be filed into.
+
+        Found on disk rather than configured: they are the sibling projects of
+        this one, and a list kept by hand would go stale every time a project
+        was added or cloned.
+        """
+        try:
+            found = brainkit.discover(cfg.brains_root)
+        except Exception as exc:
+            log.exception("Could not list the brains")
+            return JSONResponse({"brains": [], "error": str(exc)})
+        return {"brains": [{"slug": b.slug, "name": b.name,
+                            "inbox": str(b.inbox)} for b in found]}
+
+    @app.post("/api/ingest")
+    def ingest(name: str = Form(...), brain: str = Form(...)):
+        """Copy a finished transcript into one brain's inbox, on request.
+
+        Deliberately a button rather than something that happens on its own:
+        most meetings belong to one brain, and which one is only known once
+        the transcript is on screen.
+        """
+        src = _transcript_dir(name)
+        if src is None:
+            return JSONResponse({"error": "unknown transcript"}, status_code=404)
+        target = brainkit.find(cfg.brains_root, brain)
+        if target is None:
+            return JSONResponse({"error": f"unknown brain: {brain}"},
+                                status_code=404)
+        try:
+            written = brainkit.file_transcript(src, name, target)
+        except Exception as exc:
+            log.exception("Could not file %s into %s", name, brain)
+            return JSONResponse({"error": f"{type(exc).__name__}: {exc}"},
+                                status_code=500)
+        if not written:
+            return JSONResponse({"error": "nothing to ingest"}, status_code=404)
+        log.info("Filed %s into %s", name, target.name)
+        return {"brain": target.name, "slug": target.slug,
+                "files": [str(p) for p in written]}
 
     @app.get("/api/file")
     def get_file(path: str):

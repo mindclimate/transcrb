@@ -19,6 +19,10 @@
       cursor:pointer;background:var(--panel);border:1px solid var(--line);border-radius:var(--r)}
     button:active{box-shadow:inset -1px -1px var(--bevel-lt),inset 1px 1px var(--bevel-dk)}
     #status{font-family:var(--mono);font-size:12px;color:var(--accent);min-height:18px}
+    #ingestStatus{font-family:var(--mono);font-size:12px;color:var(--accent);
+      min-height:18px;margin:0 0 8px;word-break:break-all}
+    #ingestStatus.bad{color:#c8442e}
+    .gap{flex:1}
     #result{white-space:pre-wrap;font-family:var(--mono);font-size:13px;
       background:var(--paper);padding:12px;max-height:50vh;overflow:auto}
     [dir=auto]{unicode-bidi:plaintext}
@@ -105,7 +109,13 @@
       <div class="row">
         <button id="copy">Copy</button>
         <a id="dl" download="transcript.md"><button>Download .md</button></a>
+        <span class="gap"></span>
+        <button id="ingest" disabled
+          title="Copy this transcript into a brain's inbox, where its ingestion picks it up">Ingest Now</button>
+        <label for="brain">to</label>
+        <select id="brain" disabled><option value="">loading…</option></select>
       </div>
+      <div id="ingestStatus"></div>
       <div id="result" dir="auto">—</div>
     </div>
   </main>
@@ -177,10 +187,10 @@
           ? ` · ${j.speakers.length} speaker${j.speakers.length > 1 ? "s" : ""}` : "";
         $("#status").textContent = `Done (${j.language})${who} → ${j.md}`;
         // The field that named it now renames it: the name is usually only
-        // obvious once you can see what the meeting turned out to be.
-        showing = j.name;
-        $("#name").value = nameOf(j.name);
-        $("#rename").disabled = false;
+        // obvious once you can see what the meeting turned out to be, which is
+        // also when it is clear which brain the meeting belongs to.
+        setShowing(j.name);
+        clearIngestStatus();
       } catch (err) {
         $("#status").textContent = "Error: " + err.message;
       } finally {
@@ -191,8 +201,15 @@
       }
     }
 
-    // The transcript the Rename button acts on: the last one produced.
+    // The transcript the Rename and Ingest buttons act on: the last one produced.
     let showing = null;
+
+    function setShowing(name) {
+      showing = name || null;
+      $("#name").value = nameOf(showing);
+      $("#rename").disabled = !showing;
+      $("#ingest").disabled = !showing || !$("#brain").value;
+    }
 
     // The stamp belongs to the moment, not to the name. Editing shows only the
     // part a person chose, so renaming cannot silently change the date.
@@ -212,13 +229,14 @@
         const r = await fetch("/api/rename", { method: "POST", body: fd });
         const j = await r.json();
         if (!r.ok) throw new Error(j.error || r.statusText);
-        showing = j.name;
-        $("#name").value = nameOf(j.name);
+        setShowing(j.name);
+        // The filed copies moved with it, so the old path on screen is a lie.
+        clearIngestStatus();
         $("#status").textContent = `Renamed → ${j.md}`;
       } catch (err) {
         $("#status").textContent = "Error: " + err.message;
       } finally {
-        $("#rename").disabled = false;
+        $("#rename").disabled = !showing;
       }
     };
 
@@ -453,6 +471,63 @@
       await runTranscription(t);
     };
     $("#copy").onclick = () => navigator.clipboard.writeText($("#result").textContent);
+
+    // ---- ingest into a brain ----
+    // The transcript is already on disk; this hands a copy to one brain's
+    // inbox, which is where that brain's ingestion looks. The list is found on
+    // the machine rather than configured, so a new project shows up here on the
+    // next page load without anyone editing a file.
+    function ingestStatus(text, bad) {
+      const el = $("#ingestStatus");
+      el.textContent = text;
+      el.classList.toggle("bad", !!bad);
+    }
+    function clearIngestStatus() { ingestStatus(""); }
+
+    (async () => {
+      const sel = $("#brain");
+      try {
+        const { brains } = await (await fetch("/api/brains")).json();
+        if (!brains.length) {
+          sel.innerHTML = '<option value="">no brains found</option>';
+          return;
+        }
+        sel.innerHTML = brains.map(b =>
+          `<option value="${b.slug}" title="${b.inbox}">${b.name}</option>`).join("");
+        sel.disabled = false;
+        // The last brain used is almost always the next one: remembering it
+        // saves picking the same one out of a list of a dozen every time.
+        const last = localStorage.getItem("transcrb.brain");
+        if (last && brains.some(b => b.slug === last)) sel.value = last;
+        $("#ingest").disabled = !showing;
+      } catch (e) {
+        sel.innerHTML = '<option value="">unavailable</option>';
+      }
+    })();
+
+    $("#brain").onchange = () => {
+      localStorage.setItem("transcrb.brain", $("#brain").value);
+      clearIngestStatus();
+    };
+
+    $("#ingest").onclick = async () => {
+      if (!showing || !$("#brain").value) return;
+      const fd = new FormData();
+      fd.append("name", showing);
+      fd.append("brain", $("#brain").value);
+      $("#ingest").disabled = true;
+      ingestStatus("Filing…");
+      try {
+        const r = await fetch("/api/ingest", { method: "POST", body: fd });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || r.statusText);
+        ingestStatus(`Filed into ${j.brain} → ${j.files[0]}`);
+      } catch (err) {
+        ingestStatus("Error: " + err.message, true);
+      } finally {
+        $("#ingest").disabled = !showing;
+      }
+    };
   </script>
 </body>
 </html>

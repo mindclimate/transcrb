@@ -1,6 +1,8 @@
 # Copy to config/config.toml and edit. That file is gitignored — safe for secrets.
 output_dir = "out"
 # inbox = "/path/to/your/notes/inbox"   # optional: also copy transcripts here
+# brains_root = "/path/to/your/projects" # where "Ingest Now" looks for brains
+#                                        # (default: the folder holding Transcrb)
 # hf_token = "hf_xxx"        # or set the HF_TOKEN env var (needed for pyannote)
 compute_type = "int8"        # int8 (light) | int8_float16
 fallback_language = "en"     # used when auto-detect confidence is low

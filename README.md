@@ -33,6 +33,23 @@ and keeps the original date.
 Transcripts are saved in `out/`, one folder per recording, as Markdown, JSON and
 subtitles. Close the terminal window to stop Transcrb.
 
+## Sending a transcript to a brain
+
+Under the transcript, **Ingest Now** copies it into a brain's inbox, where that
+brain's ingestion picks it up. Pick which one from the dropdown beside the
+button; the last one you used is remembered.
+
+The list is found on the machine rather than configured: any project sitting
+beside Transcrb that has a `brain/inbox/` folder is offered, called by the
+`display_name` in its `brain/brain.toml`. Two forks of the same brain say which
+folder they are, so filing into the wrong one is not silent. Adding a project
+puts it in the list on the next page load, with nothing to edit.
+
+Both `transcript.md` and `transcript.json` are filed, under the transcript's own
+name. Renaming afterwards renames what was filed, so the brain never ingests a
+meeting under a name that no longer exists. If your projects live somewhere
+else, set `brains_root` in `config/config.toml`.
+
 Transcription is faster than real time: about 7 minutes of processing for a
 26-minute meeting when you pick the language, or roughly 9 with Auto-detect,
 measured on an M1 Pro. Speech recognition runs on the CPU and speaker labelling
