@@ -4,6 +4,7 @@ import math
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -103,14 +104,16 @@ def list_input_devices(platform: str) -> list[dict]:
     binary = native_recorder(platform)
     if binary is not None:
         proc = subprocess.run([str(binary), "--list-devices"],
-                              capture_output=True, text=True, timeout=30)
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=30)
         found = parse_native_listing(proc.stdout)
         if found:
             return found
     fmt = "avfoundation" if platform == "darwin" else "dshow"
     proc = subprocess.run(
         ["ffmpeg", "-hide_banner", "-f", fmt, "-list_devices", "true", "-i", ""],
-        capture_output=True, text=True,
+        # ffmpeg writes UTF-8 device names; Windows would decode them as cp1252.
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     return parse_device_listing(proc.stderr, platform)
 
@@ -128,7 +131,7 @@ def ffmpeg_index_for(uid: str, platform: str) -> str:
     fmt = "avfoundation" if platform == "darwin" else "dshow"
     proc = subprocess.run(
         ["ffmpeg", "-hide_banner", "-f", fmt, "-list_devices", "true", "-i", ""],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     matches = [d for d in parse_device_listing(proc.stderr, platform)
                if d["name"].strip() == name.strip()]
@@ -203,7 +206,7 @@ def parse_capture_summary(raw: bytes | str | None) -> dict:
 def read_progress(out: Path) -> dict:
     """How the recording is going, published once a second while it runs."""
     try:
-        return json.loads(progress_path(out).read_text())
+        return json.loads(progress_path(out).read_text(encoding="utf-8"))
     except Exception:
         # Absent in the first second, and never worth taking a recording down.
         return {}
@@ -423,6 +426,10 @@ def dropped_hint(fraction: float, recorder: str = "ffmpeg") -> str:
                        "of buffer, so this is not the usual background throttle. "
                        "Check logs/transcrb.log for what the machine was doing, "
                        "and whether the input device changed mid-meeting.")
+    if sys.platform == "win32":
+        return lost + ("ffmpeg recorded this. Close whatever else is busy on the "
+                       "machine during a call, and check logs/transcrb.log for "
+                       "what it was doing.")
     return lost + ("ffmpeg recorded this, and its capture tolerates about 10ms "
                    "of delay. Build the native recorder — bash scripts/"
                    "build-native.sh — and check that the launchd agent still "
@@ -543,6 +550,7 @@ def probe_device_peak(device: str, platform: str,
         out = Path(td) / "probe.wav"
         proc = subprocess.run(build_probe_command(device, out, platform, seconds),
                               capture_output=True, text=True,
+                              encoding="utf-8", errors="replace",
                               # Both recorders stop when stdin closes, and the
                               # native one would otherwise wait out the meeting
                               # on a terminal it inherited.

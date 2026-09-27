@@ -268,6 +268,25 @@ you have re-run something many times, `previous/` is safe to delete.
 The copy in your inbox is **replaced** rather than kept, deliberately: it is a
 drop point that gets consumed, and duplicates there would be ingested twice.
 
-## Windows (NOT yet tested)
-Run **First-time setup.bat**, install ffmpeg (`winget install Gyan.FFmpeg`), then
-**Start Transcrb.bat**. Please report issues — this path needs a verification pass.
+## Windows (not yet tested on a real PC)
+
+Run **First-time setup.bat**, then **Start Transcrb.bat**. Setup does the same
+steps as `scripts/setup.sh`: installs ffmpeg with `winget install Gyan.FFmpeg`
+if it is missing, installs `uv`, builds `.venv`, copies `config\config.toml`
+from the example, and downloads the Hebrew, English and language-detection
+models. If winget is not available, install ffmpeg by hand from
+https://www.gyan.dev/ffmpeg/builds/, put its `bin` folder on PATH, and run setup
+again.
+
+Recording uses ffmpeg's DirectShow input: one device at a time, no system-audio
+capture. To record both sides of a call, play the call through speakers, or
+pick **Stereo Mix** if your sound card offers it (it records only the call, not
+your mic).
+
+Both `.bat` files set `PYTHONUTF8=1`. Without it Windows reads and writes text
+as cp1252 and Hebrew titles break.
+
+Speaker labelling hands pyannote the samples rather than the file path on
+Windows (`engine/diarize.py`). Given a path, pyannote decodes it through
+torchcodec, which needs FFmpeg's shared DLLs, and the FFmpeg winget installs is
+a single static binary.

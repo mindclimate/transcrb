@@ -12,7 +12,10 @@ def normalize_audio(src: Path, dst: Path) -> Path:
     dst.parent.mkdir(parents=True, exist_ok=True)
     cmd = ["ffmpeg", "-y", "-i", str(src), "-ac", "1", "-ar", "16000",
            "-vn", "-f", "wav", str(dst)]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    # ffmpeg writes UTF-8; Windows would otherwise decode it as cp1252 and fail
+    # on a Hebrew filename in its error output.
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
     if proc.returncode != 0 or not dst.exists():
         raise RuntimeError(f"ffmpeg failed for {src.name}:\n{proc.stderr[-500:]}")
     return dst

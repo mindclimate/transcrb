@@ -1,4 +1,5 @@
 import logging
+import sys
 from pathlib import Path
 from engine.types import SpeakerTurn
 
@@ -61,6 +62,28 @@ def _to_turns(result) -> list[SpeakerTurn]:
         ]
     raise TypeError(f"unrecognised diarization result type: {type(result).__name__}")
 
+# Whether to decode the wav here rather than let pyannote do it. See below.
+READ_SAMPLES_FIRST = sys.platform == "win32"
+
+def _pipeline_input(wav: Path):
+    """What to hand pyannote: the path, or on Windows the samples themselves.
+
+    Given a path, pyannote 4 decodes it through torchcodec, which on Windows
+    needs FFmpeg's shared DLLs. The FFmpeg that setup installs there is a
+    single static binary, so every diarization would fail and the transcript
+    would quietly come back with one speaker. The wav is already 16 kHz mono,
+    so reading it here costs nothing and needs no decoder.
+    """
+    if not READ_SAMPLES_FIRST:
+        return str(wav)
+    try:
+        import soundfile as sf
+        import torch
+        data, rate = sf.read(str(wav), dtype="float32", always_2d=True)
+    except Exception:
+        return str(wav)
+    return {"waveform": torch.from_numpy(data.T.copy()), "sample_rate": rate}
+
 def diarize_wav(wav: Path, hf_token: str | None, pipeline_factory=None,
                 num_speakers: int | None = None) -> list[SpeakerTurn]:
     """Speaker turns for `wav`.
@@ -74,13 +97,14 @@ def diarize_wav(wav: Path, hf_token: str | None, pipeline_factory=None,
     factory = pipeline_factory or _default_factory
     kwargs = {"num_speakers": num_speakers} if num_speakers else {}
     devices = _devices()
+    audio = _pipeline_input(wav)
     for i, device in enumerate(devices):
         last = i == len(devices) - 1
         try:
             # Rebuilt per attempt: a pipeline that failed partway through being
             # moved to the GPU is not a safe thing to retry on the CPU.
             pipeline = _on_device(factory(hf_token), device)
-            turns = _to_turns(pipeline(str(wav), **kwargs))
+            turns = _to_turns(pipeline(audio, **kwargs))
             turns.sort(key=lambda t: t.start)
             if not turns:
                 log.warning("Diarization produced no speaker turns.")

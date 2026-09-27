@@ -1,10 +1,12 @@
 # Transcrb
 
-Meeting transcription that runs entirely on your own Mac. Audio never leaves the
-machine — no account, no upload, no cloud service. English and Hebrew, including
+Meeting transcription that runs entirely on your own computer — a Mac, or a
+Windows PC (see [Windows](#windows)). Audio never leaves the machine — no account, no upload, no cloud service. English and Hebrew, including
 calls that switch between them mid-conversation, with speaker labels.
 
 ## Install (once)
+
+On Windows, use the `.bat` files instead — see [Windows](#windows).
 
 1. Double-click **First-time setup.command**.
    If macOS says "unidentified developer", right-click it → **Open** instead.
@@ -151,5 +153,23 @@ transient: the settled figure is what the service costs between recordings.
 
 ## Windows
 
-Run **First-time setup.bat**, then **Start Transcrb.bat**. This path is not yet
-tested — please report what breaks.
+Written for Windows but not yet run on a real PC — please report what breaks.
+
+1. Double-click **First-time setup.bat**. If Windows says it protected your PC,
+   click **More info** → **Run anyway**. It installs ffmpeg (through winget),
+   Python and the speech models — a few GB, one time only.
+2. For speaker labels, add your HuggingFace token to `config\config.toml`
+   (see [Speaker labels](#speaker-labels)).
+3. Double-click **Start Transcrb.bat**. The browser opens after a few seconds.
+   Close the window to stop Transcrb.
+
+What differs from the Mac:
+
+- **Recording takes one input at a time**, usually your microphone. The other
+  side of a call is only captured if it plays out loud into the mic. The Mac's
+  automatic call capture and its native recorder are Mac-only; on Windows,
+  recording goes through ffmpeg, which can drop audio when the PC is busy.
+  Transcribing a file you already have is unaffected.
+- **Everything runs on the processor**, so transcription is slower than on an
+  Apple Silicon Mac.
+- There is no background service; start it from the `.bat` each time.

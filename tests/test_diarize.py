@@ -126,3 +126,18 @@ def test_devices_lists_a_cpu_fallback_after_any_accelerator():
     devices = D._devices()
     assert devices[-1] == "cpu", devices
     assert len(devices) == len(set(devices))
+
+def test_windows_hands_pyannote_the_samples_not_the_path(monkeypatch):
+    # pyannote decodes a path through torchcodec, which on Windows needs FFmpeg
+    # DLLs that setup does not install.
+    monkeypatch.setattr("engine.diarize.READ_SAMPLES_FIRST", True)
+    seen = {}
+    def factory(tok):
+        def pipeline(audio, **kw):
+            seen["audio"] = audio
+            return FakeDiarizeOutput()
+        return pipeline
+    wav = Path(__file__).parent / "fixtures" / "tone_mono_16k.wav"
+    diarize_wav(wav, "tok", pipeline_factory=factory)
+    assert seen["audio"]["sample_rate"] == 16000
+    assert seen["audio"]["waveform"].shape[0] == 1
