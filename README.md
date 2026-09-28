@@ -1,28 +1,36 @@
 # Transcrb
 
 Meeting transcription that runs entirely on your own computer — a Mac, or a
-Windows PC (see [Windows](#windows)). Audio never leaves the machine — no account, no upload, no cloud service. English and Hebrew, including
-calls that switch between them mid-conversation, with speaker labels.
+Windows PC (see [Windows](#windows)). Audio never leaves the machine — no
+account, no upload, no cloud service. English and Hebrew, including calls that
+switch between them mid-conversation, with speaker labels.
 
-## Install (once)
+## Install on a Mac (once)
 
 On Windows, use the `.bat` files instead — see [Windows](#windows).
 
-1. Double-click **First-time setup.command**.
-   If macOS says "unidentified developer", right-click it → **Open** instead.
-2. Leave it running. It installs what it needs and downloads the speech models
-   (a few GB, one time only). This takes a while on the first run.
-3. When it says setup is complete, close the window.
+1. Install [Homebrew](https://brew.sh) if you don't have it. Setup uses it to
+   install ffmpeg and BlackHole.
+2. Double-click **First-time setup.command**. If macOS blocks it, open
+   System Settings → Privacy & Security and click **Open Anyway** (on macOS 14
+   and older, right-click the file → **Open** works too).
+3. Leave it running. It installs Python, downloads the speech models (a few GB,
+   one time only) and builds the recorder. This takes a while on the first run.
+4. When it says setup is complete, close the window.
 
 ## Use it
 
-Double-click **Start Transcrb.command**. Your browser opens with two panels:
+Double-click **Start Transcrb.command** (**Start Transcrb.bat** on Windows).
+Your browser opens with two panels:
 
 - **Transcribe a file** — drop in any audio or video file.
-- **Record** — record a call. Leave the input on
+- **Record** — record a call. On macOS 14.2 or later, leave the input on
   *"Call audio + my mic (automatic)"* and it captures both sides of the
-  conversation, with nothing to configure. Recordings transcribe themselves when
-  you press stop.
+  conversation, with nothing to configure. The first time, macOS asks to let
+  Terminal use the **Microphone** and **Screen & System Audio Recording** —
+  allow both. Older macOS needs the BlackHole setup in
+  [docs/SETUP.md](docs/SETUP.md#older-macos-before-142-the-blackhole-fallback).
+  Recordings transcribe themselves when you press stop.
 
 The **Name** box at the top right names whatever you record or transcribe next —
 a meeting title, in English or Hebrew. Leave it blank and the transcript is
@@ -54,8 +62,9 @@ else, set `brains_root` in `config/config.toml`.
 
 Transcription is faster than real time: about 7 minutes of processing for a
 26-minute meeting when you pick the language, or roughly 9 with Auto-detect,
-measured on an M1 Pro. Speech recognition runs on the CPU and speaker labelling
-on the Mac's GPU. One transcription runs at a time; a second waits its turn,
+measured on an M1 Pro. Speech recognition runs on the CPU, and speaker
+labelling on the GPU of an Apple Silicon Mac (the CPU elsewhere, which is
+slower). One transcription runs at a time; a second waits its turn,
 because running two at once is slower than running them one after the other.
 
 If something goes wrong, `logs/transcrb.log` has the details — it keeps them
@@ -118,6 +127,19 @@ Naming who spoke needs a free HuggingFace token. Without one you still get a ful
 transcript, just with everyone as `SPEAKER_00`. See step 2 of
 [docs/SETUP.md](docs/SETUP.md) for the three-minute setup.
 
+## Running in the background (Mac, optional)
+
+Instead of starting it by hand, Transcrb can run as a login service so
+http://localhost:8756 is always there:
+
+```
+./install-service.sh              # install and start
+./install-service.sh --status
+./install-service.sh --uninstall
+```
+
+The service log is `~/.cache/transcrb/service.log`.
+
 ## Memory, when it runs as a service
 
 The models do not stay resident. The service climbs during a run and then
@@ -141,11 +163,14 @@ transient: the settled figure is what the service costs between recordings.
 
 | | |
 |---|---|
-| `config/` | your settings — `config.toml` (yours, private) and an example to copy |
+| `First-time setup` / `Start Transcrb` | the launchers: `.command` for Mac, `.bat` for Windows |
+| `install-service.sh`, `run.sh`, `com.aliyoop.transcrb.plist` | the optional Mac background service |
+| `config/` | your settings — `config.toml` (yours, private, created by setup) and the example it is copied from |
 | `engine/` | the transcription pipeline |
-| `native/` | `capture.swift`, the recorder; the binary is built by setup |
+| `native/` | `capture.swift`, the Mac recorder; the binary is built by setup |
 | `web/` | the local web interface |
-| `scripts/` | setup script called by the installer |
+| `scripts/` | the Mac setup script, and the recorder build |
+| `tests/` | `.venv/bin/python -m pytest` |
 | `docs/` | [SETUP.md](docs/SETUP.md) — full setup, troubleshooting, how recording works |
 | `out/` | your transcripts and recordings (created on first use) |
 | `models/` | downloaded speech models (created by setup) |
@@ -153,7 +178,8 @@ transient: the settled figure is what the service costs between recordings.
 
 ## Windows
 
-Written for Windows but not yet run on a real PC — please report what breaks.
+Written for Windows 10 and 11 but not yet run on a real PC — please report
+what breaks.
 
 1. Double-click **First-time setup.bat**. If Windows says it protected your PC,
    click **More info** → **Run anyway**. It installs ffmpeg (through winget),
@@ -166,7 +192,8 @@ Written for Windows but not yet run on a real PC — please report what breaks.
 What differs from the Mac:
 
 - **Recording takes one input at a time**, usually your microphone. The other
-  side of a call is only captured if it plays out loud into the mic. The Mac's
+  side of a call is only captured if it plays out loud into the mic (or pick
+  **Stereo Mix**, if your sound card offers it, for the call without you). The Mac's
   automatic call capture and its native recorder are Mac-only; on Windows,
   recording goes through ffmpeg, which can drop audio when the PC is busy.
   Transcribing a file you already have is unaffected.

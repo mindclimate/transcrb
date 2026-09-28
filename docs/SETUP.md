@@ -1,9 +1,11 @@
 # Setup
 
 ## macOS (verified)
-1. Double-click **First-time setup.command**. If macOS warns "unidentified developer",
-   right-click → Open. It installs ffmpeg + BlackHole, builds the Python 3.11 env,
-   and downloads/converts the models (a few GB, one time).
+1. Install [Homebrew](https://brew.sh) first. Then double-click
+   **First-time setup.command**. If macOS blocks it, click **Open Anyway** under
+   System Settings → Privacy & Security. It installs ffmpeg + BlackHole through
+   Homebrew, builds the Python 3.11 env, downloads the models (a few GB, one
+   time) and builds the native recorder.
 2. Speaker labels need a free HuggingFace token:
    - Create one at https://huggingface.co/settings/tokens
    - Put it in `config/config.toml` as `hf_token = "hf_..."` (copy from `config/config.example.toml`),
